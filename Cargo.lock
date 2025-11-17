@@ -7,6 +7,7 @@ name = "awhorn_c"
 version = "0.1.0"
 dependencies = [
  "fxhash",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -23,3 +24,9 @@ checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
  "byteorder",
 ]
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
