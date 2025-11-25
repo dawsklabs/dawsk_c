@@ -1,89 +1,100 @@
 pub mod printer;
 
 use std::fmt::{Display, Formatter, Result};
-use std::{rc::Rc, cell::RefCell};
+use std::cell::{Ref, RefCell};
+use std::rc::Rc;
 
-use crate::ast::token::{Position, TokenKind};
+use crate::ast::token::{Span, TokenKind};
+use crate::ast::ASTExprKind;
+use crate::color::Color;
 
+#[derive(Debug)]
 pub struct Diagnostic {
     type_: DiagnosticType,
-    pos: Position,
+    span: Span,
 }
 
 impl Diagnostic {
-    pub fn new(type_: DiagnosticType, pos: Position) -> Self {
+    pub fn new(type_: DiagnosticType, span: Span) -> Self {
         Self {
             type_,
-            pos,
+            span,
         }
     }
 
     fn make(&self) -> String {
-        let mut result: String = format!("{} {}\n", self.type_, self.kind()).to_string();
-        result.push_str(&format!("--> {}:{}:{}\n", self.pos.file, self.pos.line, self.pos.span.start));
-        result
+        format!("{}{}: {}{}", self.format_type(), Color::Bold, self.kind(), Color::Reset)
+    }
+
+    fn format_type(&self) -> String {
+        let color = match &self.type_ {
+            DiagnosticType::Error(_) => "FF686B",
+            DiagnosticType::Warning(_) => "F5BD60",
+            DiagnosticType::Tip(_) => "AED692",
+        };
+
+        format!("{}{}{}{}", Color::Bold, Color::FgHex(color.to_string()), self.type_, Color::Reset)
     }
 
     fn kind(&self) -> &DiagnosticKind {
         match &self.type_ {
-            DiagnosticType::Error(kind) | DiagnosticType::Warning(kind) => &kind,
+            DiagnosticType::Error(kind) | DiagnosticType::Warning(kind) | DiagnosticType::Tip(kind) => &kind,
         }
     }
 }
 
 pub struct DiagnosticBag {
-    diagnostics: Vec<Diagnostic>,
+    diagnostics: RefCell<Vec<Diagnostic>>,
 }
 
 impl DiagnosticBag {
     pub fn new() -> Self {
         Self {
-            diagnostics: vec![],
+            diagnostics: RefCell::new(vec![]),
         }
     }
 
-    pub fn add(&mut self, diag: Diagnostic) {
-        self.diagnostics.push(diag);
+    pub fn add(&self, diag: Diagnostic) {
+        self.diagnostics.borrow_mut().push(diag);
     }
 
-    pub fn render(&self) -> String {
-        let mut result = String::new();
-        for diagnostic in &self.diagnostics {
-            result.push_str(&(diagnostic.make()));
-            result.push('\n'); // Add a newline between each diagnostic for readability.
-        }
-        result
-    }
-
-    pub fn get(&self) -> &[Diagnostic] {
-        &self.diagnostics
+    pub fn get(&self) -> Ref<'_, Vec<Diagnostic>> {
+        self.diagnostics.borrow()
     }
 }
 
-pub type DiagnosticBagCell = Rc<RefCell<DiagnosticBag>>;
+pub type DiagnosticBagCell = Rc<DiagnosticBag>;
 
+#[derive(Debug)]
 pub enum DiagnosticType {
     Error(DiagnosticKind),
     Warning(DiagnosticKind),
+    Tip(DiagnosticKind),
 }
 
 impl Display for DiagnosticType {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         #![allow(unreachable_patterns)]
         match self {
-            DiagnosticType::Error(_) => write!(f, "ERROR"),
-            DiagnosticType::Warning(_) => write!(f, "WARNING"),
-            _ => write!(f, "DIAGNOSTIC"),
+            DiagnosticType::Error(_) => write!(f, "error"),
+            DiagnosticType::Warning(_) => write!(f, "warning"),
+            DiagnosticType::Tip(_) => write!(f, "tip"),
+            _ => write!(f, "..."),
         }
     }
 }
 
+#[derive(Debug)]
 pub enum DiagnosticKind {
     UnknownToken { given: char },
-    UnexpectedToken { given: TokenKind, expected: Vec<TokenKind> },
+    UnexpectedToken { given: TokenKind },
+    UnexpectedExpression { given: ASTExprKind },
+    ExpectedToken { expected: Vec<String> },
+    ExpectedExpression { expected: Vec<String> },
     MissingSemicolon,
     // TypeMismatch { given: DataType, expected: DataType },
     UnknownIdentifier { identifier: String },
+    UnknownCharacter { character: char },
     OutOfBound,
 }
 
@@ -91,13 +102,31 @@ impl Display for DiagnosticKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         #![allow(unreachable_patterns)]
         match self {
-            DiagnosticKind::UnknownToken { given } => write!(f, "Unexpected token '{}'", given),
-            DiagnosticKind::UnexpectedToken { .. } => write!(f, "Unexpected token"),
+            DiagnosticKind::UnexpectedToken { given } => write!(f, "Unexpected token: {}", given),
+            DiagnosticKind::UnexpectedExpression { given } => write!(f, "Unexpected expression: {}", given),
+            DiagnosticKind::ExpectedToken { expected } => write!(f, "Expected token of kind: {}", Self::join_vec(expected)),
+            DiagnosticKind::ExpectedExpression { expected } => write!(f, "Expected expression of kind: {}", Self::join_vec(expected)),
             DiagnosticKind::MissingSemicolon => write!(f, "Missing semicolon"),
             // DiagnosticKind::TypeMismatch { .. } => write!(f, "Type mismatch"),
             DiagnosticKind::UnknownIdentifier { identifier } => write!(f, "Unknown identifier: {}", identifier),
+            DiagnosticKind::UnknownCharacter { character } => write!(f, "Unknown character: {}", character.to_string()),
             DiagnosticKind::OutOfBound => write!(f, "Out of bound"),
             _ => write!(f, "{}", self),
+        }
+    }
+}
+
+impl DiagnosticKind {
+    fn join_vec(items: &[String]) -> String {
+        match items.len() {
+            0 => String::new(),
+            1 => items[0].clone(),
+            2 => format!("{} or {}", items[0], items[1]),
+            _ => {
+                let all_but_last = &items[..items.len()-1];
+                let last = &items[items.len()-1];
+                format!("{} or {}", all_but_last.join(", "), last)
+            }
         }
     }
 }

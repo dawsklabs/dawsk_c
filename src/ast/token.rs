@@ -1,4 +1,5 @@
 use std::fmt::{ Display, Formatter, Result };
+use super::types::TypeKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {
@@ -21,25 +22,14 @@ impl Span {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Position {
-    pub line: usize,
-    pub span: Span, // column: start..end
-    pub file: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
-    pub pos: Position,
+    pub span: Span,
 }
 
 impl Token {
-    pub fn new(kind: TokenKind, pos: Position) -> Self {
-        Self { kind, pos }
-    }
-
-    pub fn pos(&self) {
-        todo!()
+    pub fn new(kind: TokenKind, span: Span) -> Self {
+        Self { kind, span }
     }
 }
 
@@ -47,29 +37,30 @@ impl Token {
 pub enum TokenKind {
     // Keywords
     Keyword(Keyword),
-    Marker(Marker),
-
+    
     // Types
+    Type(TypeKind),
     Identifier(String),
     Integer(i64),
     Float(f64),
     Char(char),
     String(String),
     Bool(bool),
-
+    Unknown(char),
+    
     // Operators
     Plus,
     Minus,
     Asterisk,
     Slash,
-    Modulus,
+    Percent,
+
+    Equals,
 
     And,
     Pipe,
     Caret,
     Tilde,
-
-    Equals,
 
     // Punctuation
     Dot,
@@ -78,6 +69,7 @@ pub enum TokenKind {
     Semicolon,
     Exclamation,
     Question,
+    Underscore,
 
     // Brackets
     LParen,
@@ -89,19 +81,23 @@ pub enum TokenKind {
     LAngle,
     RAngle,
 
-    Underscore,
-
     // Specials
     EOF,
-    Unknown(char),
 }
 
 impl Display for TokenKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        #![allow(unreachable_patterns)]
         match self {
             TokenKind::Keyword(k) => write!(f, "Keyword ({})", k),
+            TokenKind::Type(t) => write!(f, "Type ({})", t),
+            TokenKind::Integer(_) => write!(f, "Int"),
+            TokenKind::Float(_) => write!(f, "Float"),
+            TokenKind::String(_) => write!(f, "String"),
+            TokenKind::Char(_) => write!(f, "Char"),
             TokenKind::Identifier(i) => write!(f, "Identifier ({})", i),
-            _ => write!(f, ""),
+            TokenKind::Unknown(_) => write!(f, "<Unknown>"),
+            _ => write!(f, "<not yet implemented>"),
         }
     }
 }
@@ -109,12 +105,11 @@ impl Display for TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Keyword {
     Dec,
-    Decex,
-    Ex,
-    Mod,
+    Publy,
+    Mut,
     Struct,
     Impl,
-    SelfKw,
+    Self_,
     Type,
     Enum,
     Func,
@@ -128,10 +123,12 @@ pub enum Keyword {
 
 impl Display for Keyword {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        #![allow(unreachable_patterns)]
         match self {
             Keyword::Dec => write!(f, "dec"),
-            Keyword::Mod => write!(f, "mod"),
-            _ => write!(f, "not yet implemented"),
+            Keyword::Mut => write!(f, "mut"),
+            Keyword::Publy => write!(f, "publy"),
+            _ => write!(f, "<not yet implemented>"),
         }
     }
 }
@@ -140,15 +137,3 @@ impl Display for Keyword {
 pub enum Marker {
     Override,
 }
-
-// pub enum FloatType {
-//     F32(f32),
-//     F64(f64),
-// }
-
-// pub enum IntType {
-//     I8(i8),
-//     I16(i16),
-//     I32(i32),
-//     I64(i64),
-// }

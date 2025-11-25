@@ -2,6 +2,7 @@ use super::{
     AST, ASTStmt, ASTStmtKind, ASTExpr, ASTExprKind, ASTBinaryExpr, ASTBinaryOperatorKind,
 };
 use std::{ fmt::{ Display, Formatter, Error }, result::Result };
+use fxhash::FxHashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -35,11 +36,14 @@ impl Display for Value {
 
 pub type EvalResult = Result<Value, String>;
 
-pub struct Evaluator;
+pub struct Evaluator {
+    last_val: Option<Value>,
+    vars: FxHashMap<String, Value>,
+}
 
 impl Evaluator {
     pub fn new() -> Self {
-        Self
+        Self { last_val: None, vars: FxHashMap::default() }
     }
 
     pub fn eval_ast(&mut self, ast: &AST) -> EvalResult {
@@ -51,8 +55,11 @@ impl Evaluator {
     }
 
     fn eval_stmt(&mut self, stmt: &ASTStmt) -> EvalResult {
+        #![warn(unreachable_patterns)]
         match &stmt.kind {
             ASTStmtKind::Expr(expr) => self.eval_expr(expr),
+            ASTStmtKind::Dec(_expr) => todo!(),
+            _ => todo!()
         }
     }
 
@@ -65,7 +72,7 @@ impl Evaluator {
             ASTExprKind::Bool(v) => Ok(Value::Bool(*v)),
             ASTExprKind::Parenthesized(p) => self.eval_expr(&p.expr),
             ASTExprKind::Binary(b) => self.eval_binary_expr(b),
-            ASTExprKind::Error(u) => Ok(Value::Error),
+            ASTExprKind::Error => Ok(Value::Error),
         }
     }
 

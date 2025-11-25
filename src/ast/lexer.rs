@@ -4,17 +4,13 @@
 // - read_number now only supports hex integers when starting with 0x/0X
 // - decimal/scientific float handling unchanged
 
-use super::token::{ Token, TokenKind, Position, Span, Keyword, Marker };
+use super::token::{ Token, TokenKind, Span, Keyword, Marker };
 use crate::file;
-use std::fs;
 
 #[derive(Clone)]
 pub struct Lexer {
     input: Vec<u8>,
     position: usize,
-    line: usize,
-    column: usize,
-    file_name: String,
 }
 
 impl Lexer {
@@ -22,21 +18,18 @@ impl Lexer {
         Self {
             input: file::content(),
             position: 0,
-            line: 1,
-            column: 1,
-            file_name: file::get().to_string(),
         }
     }
 
     fn create_token(&mut self, kind: TokenKind, start: usize, end: usize) -> Token {
         Token {
             kind,
-            pos: Position {
-                line: self.line,
-                span: Span { start: start, end: end + 1 },
-                file: self.file_name.clone(),
-            },
+            span: Span::new(start, end),
         }
+    }
+
+    fn create_raw_token(&mut self, kind: TokenKind, pos: usize) {
+        Token::new(kind, Span::new(pos, pos));
     }
 
     fn peek(&self, n: usize) -> Option<u8> {
@@ -45,16 +38,7 @@ impl Lexer {
 
     fn advance(&mut self, n: usize) {
         for _ in 0..n {
-            if let Some(&c) = self.input.get(self.position) {
-                self.position += 1;
-
-                if c == b'\n' {
-                    self.line += 1;
-                    self.column = 1;
-                } else {
-                    self.column += 1;
-                }
-            }
+            self.position += 1;
         }
     }
 
@@ -76,7 +60,7 @@ impl Lexer {
 
         let (kind, len) = match self.peek(0) {
             Some(c) if (c as char).is_ascii_alphabetic() => self.read_identifier_or_keyword(),
-            Some(c) if c == b'@' => self.read_marker(),
+            // Some(c) if c == b'@' => self.read_marker(),
             Some(c) if (c as char).is_numeric() => self.read_number(),
             Some(b'+') => (TokenKind::Plus, 1),
             Some(b'-') => (TokenKind::Minus, 1),
@@ -95,7 +79,7 @@ impl Lexer {
                     (TokenKind::Slash, 1)
                 }
             },
-            Some(b'%') => (TokenKind::Modulus, 1),
+            Some(b'%') => (TokenKind::Percent, 1),
             Some(b'=') => (TokenKind::Equals, 1),
             Some(b'&') => (TokenKind::And, 1),
             Some(b'|') => (TokenKind::Pipe, 1),
@@ -122,7 +106,7 @@ impl Lexer {
             None => (TokenKind::EOF, 0),
         };
         self.advance(len);
-        self.create_token(kind, start, self.position - 1)
+        self.create_token(kind, start, self.position)
     }
 
     fn skip_whitespace(&mut self) {
@@ -135,17 +119,22 @@ impl Lexer {
         }
     }
 
-    // fn strip_underscores(&self, s: &str) -> String {
-    //     s.replace('_', "")
-    // }
-
     fn read_identifier_or_keyword(&mut self) -> (TokenKind, usize) {
         let mut i = 0;
+
+        // First character must be a letter
+        if let Some(c) = self.peek(0) {
+            if !(c as char).is_ascii_alphabetic() {
+                panic!("Identifier must start with a letter, got '{}'", c as char);
+            }
+        }
 
         while let Some(c) = self.peek(i) {
             if (c as char).is_ascii_alphanumeric() || c == b'_' {
                 i += 1;
-            } else { break; }
+            } else {
+                break;
+            }
         }
 
         let raw: String = self.input[self.position..self.position + i]
@@ -154,12 +143,11 @@ impl Lexer {
             .collect();
         let kind = match raw.as_str() {
             "dec" => TokenKind::Keyword(Keyword::Dec), // e.g. dec mod x: i8 = 16;
-            "dec_ex" => TokenKind::Keyword(Keyword::Decex), // global variables/...
-            "ex" => TokenKind::Keyword(Keyword::Ex), // global/public modifier
-            "mod" => TokenKind::Keyword(Keyword::Mod), // modifiable = mutable
+            "mut" => TokenKind::Keyword(Keyword::Mut), // mutable
+            "publy" => TokenKind::Keyword(Keyword::Publy), // publy = public
             "struct" => TokenKind::Keyword(Keyword::Struct),
             "impl" => TokenKind::Keyword(Keyword::Impl),
-            "self" => TokenKind::Keyword(Keyword::SelfKw), // self reference
+            "self" => TokenKind::Keyword(Keyword::Self_), // self reference
             "type" => TokenKind::Keyword(Keyword::Type),
             "enum" => TokenKind::Keyword(Keyword::Enum),
             "func" => TokenKind::Keyword(Keyword::Func),
@@ -174,30 +162,29 @@ impl Lexer {
             _ => TokenKind::Identifier(raw.clone()),
         };
 
-        (kind, i + raw.len())
+        (kind, i)
     }
 
     // e.g. @override
-    fn read_marker(&mut self) -> (TokenKind, usize) {
-        let mut i = 0;
-        i += 1; // skip '@'
+    // fn read_marker(&mut self) -> (TokenKind, usize) {
+    //     let mut i = 1; // skip '@'
 
-        while let Some(c) = self.peek(i) {
-            if (c as char).is_ascii_alphanumeric() || c == b'_' {
-                i += 1;
-            } else {
-                break;
-            }
-        }
+    //     while let Some(c) = self.peek(i) {
+    //         if (c as char).is_ascii_alphanumeric() || c == b'_' {
+    //             i += 1;
+    //         } else {
+    //             break;
+    //         }
+    //     }
 
-        let raw: String = self.input[self.position..self.position + i].iter().map(|&b| b as char).collect();
-        let marker = match raw.as_str() {
-            "override" => Marker::Override,
-            _ => panic!("Unknown marker @{raw}"),
-        };
+    //     let raw: String = self.input[self.position..self.position + i].iter().map(|&b| b as char).collect();
+    //     let marker = match raw.as_str() {
+    //         "override" => Marker::Override,
+    //         _ => panic!("Unknown marker @{raw}"),
+    //     };
 
-        (TokenKind::Marker(marker), i + raw.len())
-    }
+    //     (TokenKind::Marker(marker), i)
+    // }
 
     fn read_number(&mut self) -> (TokenKind, usize) {
         if self.peek(0) == Some(b'0') && matches!(self.peek(1), Some(b'x') | Some(b'X')) {
@@ -327,7 +314,7 @@ impl Lexer {
     }
 
     // line, column, file name
-    pub fn get_pos(&self) -> (usize, usize, &str) {
-        (self.line, self.column, &self.file_name)
+    pub fn get_pos(&self) -> usize {
+        self.position
     }
 }
