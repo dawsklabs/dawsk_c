@@ -113,6 +113,8 @@ pub enum Keyword {
     Type,
     Enum,
     Func,
+    True,
+    False,
     As,
     For,
     While,

@@ -4,7 +4,7 @@
 // - read_number now only supports hex integers when starting with 0x/0X
 // - decimal/scientific float handling unchanged
 
-use super::token::{ Token, TokenKind, Span, Keyword, Marker };
+use super::token::{Token, TokenKind, Span, Keyword};
 use crate::file;
 
 #[derive(Clone)]
@@ -157,8 +157,8 @@ impl Lexer {
             "if" => TokenKind::Keyword(Keyword::If),
             "else" => TokenKind::Keyword(Keyword::Else),
             "in" => TokenKind::Keyword(Keyword::In),
-            "false" => TokenKind::Bool(false),
-            "true" => TokenKind::Bool(true),
+            "false" => TokenKind::Keyword(Keyword::False),
+            "true" => TokenKind::Keyword(Keyword::True),
             _ => TokenKind::Identifier(raw.clone()),
         };
 

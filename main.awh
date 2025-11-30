@@ -1,3 +1,11 @@
-(7 - 2.52 / 2) + 8 * 9.7;
-(17 - 4) * 2.5;
-dec mut b: Vec<Vec<String>> = 13;
+dec mut b: i8 = 13 + 15 - 3;
+dec publy x: i16 = b + 2;
+dec t: Map<i8, str> = 0;
+dec p: (a, c, str) = 1;
+b += (17 - 4);
+b /= 3;
+dec mut d: bool = !true;
+d = 'a'; // toggle boolean value
+
+dec mut m: str = "aaaaa";
+m += "bbbb"; // string concatenation

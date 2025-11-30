@@ -1,7 +1,6 @@
 use crate::diagnostics::{DiagnosticBagCell};
 use crate::text::{Source, file};
 use crate::color::Color;
-use std::cmp;
 
 pub struct Printer<'a> {
     source: &'a Source,
@@ -19,8 +18,8 @@ impl<'a> Printer<'a> {
         let mut out = String::new();
         let file = file::get();
 
-        let blue = Color::FgHex("7FB0FF".to_string());
-        let red  = Color::FgHex("FF686B".to_string());
+        const COLOR_BLUE: Color = Color::FgHex("#7FB0FF");
+        const COLOR_RED: Color = Color::FgHex("#FF686B");
 
         out.push_str("\n");
 
@@ -30,7 +29,7 @@ impl<'a> Printer<'a> {
             // ---------------------------------------------------------------------
             // Position
             // ---------------------------------------------------------------------
-            let (line_no, col_no) = self.source.line_col(diag.span.start);
+            let (line_no, _) = self.source.line_col(diag.span.start);
             let line_bytes = self.source.line_at(diag.span.start);
             let line_str = String::from_utf8_lossy(line_bytes);
 
@@ -53,7 +52,7 @@ impl<'a> Printer<'a> {
                 "{:>width$}{}{}-->{} {}:{}:{}\n",
                 "",
                 Color::Bold,
-                blue,
+                COLOR_BLUE,
                 Color::Reset,
                 file,
                 line_no,
@@ -62,18 +61,18 @@ impl<'a> Printer<'a> {
             ));
 
             // Pipe über der Codezeile
-            out.push_str(&format!("{:>width$} {}{}|{}\n", "", Color::Bold, blue, Color::Reset, width = line_no_width));
+            out.push_str(&format!("{:>width$} {}{}|{}\n", "", Color::Bold, COLOR_BLUE, Color::Reset, width = line_no_width));
 
             // Codezeile
-            out.push_str(&format!("{}{}{:>width$} |{} {}\n", Color::Bold, blue, line_no, Color::Reset, line_str, width = line_no_width));
+            out.push_str(&format!("{}{}{:>width$} |{} {}\n", Color::Bold, COLOR_BLUE, line_no, Color::Reset, line_str, width = line_no_width));
 
             // Caret-Zeile
-            out.push_str(&format!("{:>width$} {}{}|{} ", "", Color::Bold, blue, Color::Reset, width = line_no_width));
+            out.push_str(&format!("{:>width$} {}{}|{} ", "", Color::Bold, COLOR_BLUE, Color::Reset, width = line_no_width));
             out.push_str(&" ".repeat(col)); // Padding bis Fehler-Spalte
             out.push_str(&format!(
                 "{}{}{}{}",
                 Color::Bold,
-                red,
+                COLOR_RED,
                 "^".repeat(caret_len),
                 Color::Reset
             ));

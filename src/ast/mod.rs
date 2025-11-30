@@ -3,12 +3,13 @@ pub mod lexer;
 pub mod parser;
 pub mod token;
 pub mod types;
+pub mod scope;
 
 use std::fmt::{Display, Formatter, Result};
 
-use token::{ Token, TokenKind, Span };
+use token::{ Token, TokenKind };
 use types::TypeKind;
-use crate::text::Source;
+use crate::color::Color;
 
 pub struct AST {
     pub stmts: Vec<ASTStmt>
@@ -37,6 +38,7 @@ impl AST {
 
 pub trait ASTVisitor {
     fn do_visit_stmt(&mut self, stmt: &ASTStmt) {
+        #[warn(unreachable_patterns)]
         match &stmt.kind {
             ASTStmtKind::Expr(expr) => self.visit_expr(expr),
             ASTStmtKind::Dec(dec) => self.visit_dec(dec),
@@ -50,11 +52,13 @@ pub trait ASTVisitor {
 
     fn do_visit_expr(&mut self, expr: &ASTExpr) {
         match &expr.kind {
-            ASTExprKind::Integer(_) | ASTExprKind::Float(_) | ASTExprKind::String(_) | ASTExprKind::Char(_) | ASTExprKind::Bool(_) => {
+            ASTExprKind::Integer(_) | ASTExprKind::Float(_) | ASTExprKind::String(_) | ASTExprKind::Char(_) | ASTExprKind::Bool(_) | ASTExprKind::Variable(_) => {
                 self.visit_valued(&expr.kind);
             }
             ASTExprKind::Binary(bin) => self.visit_binary_expr(&bin),
             ASTExprKind::Parenthesized(expr) => self.visit_paren_expr(&expr),
+            ASTExprKind::Assignment(expr) => self.visit_assignment_expr(expr),
+            ASTExprKind::Unary(unary) => self.visit_unary_expr(&unary),
             ASTExprKind::Error => self.visit_error(),
         }
     }
@@ -76,6 +80,14 @@ pub trait ASTVisitor {
         self.visit_expr(&expr.expr);
     }
 
+    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) {
+        self.visit_assignment_expr(&expr);
+    }
+
+    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) {
+        self.visit_unary_expr(&expr);
+    }
+
     fn visit_error(&self);
 
     fn visit_valued(&self, kind: &ASTExprKind);
@@ -86,53 +98,80 @@ pub struct ASTPrinter {
 }
 
 pub const INDENT_SIZE: usize = 1;
+pub const MOUVE_COLOR: Color = Color::FgHex("#cba6f7");
+pub const LAVENDAR_COLOR: Color = Color::FgHex("#b4befe");
+pub const BLUE_COLOR: Color = Color::FgHex("#89b4fa");
+pub const GREEN_COLOR: Color = Color::FgHex("#a6e3a1");
+pub const FLAMINGO_COLOR: Color = Color::FgHex("#f2cdcd");
+pub const PEACH_COLOR: Color = Color::FgHex("#fab387");
+pub const MAROON_COLOR: Color = Color::FgHex("#eba0ac");
+pub const RED_COLOR: Color = Color::FgHex("#f38ba8");
+pub const SUBTEXT_COLOR: Color = Color::FgHex("#a6adc8");
+pub const RESET_COLOR: Color = Color::Reset;
 
 impl ASTVisitor for ASTPrinter {
     fn visit_stmt(&mut self, stmt: &ASTStmt) {
-        self.print_indent("Stmt:");
+        self.print_indent(&format!("{}Stmt{}:", SUBTEXT_COLOR, RESET_COLOR));
         self.indent += INDENT_SIZE;
         ASTVisitor::do_visit_stmt(self, stmt);
         self.indent -= INDENT_SIZE;
     }
 
     fn visit_expr(&mut self, expr: &ASTExpr) {
-        self.print_indent("Expr:");
+        self.print_indent(&format!("{}Expr{}:", SUBTEXT_COLOR, RESET_COLOR));
         self.indent += INDENT_SIZE;
         ASTVisitor::do_visit_expr(self, expr);
         self.indent -= INDENT_SIZE;
     }
 
     fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) {
-        self.print_indent("Bin:");
+        self.print_indent(&format!("{}Binary{}:", SUBTEXT_COLOR, RESET_COLOR));
         self.indent += INDENT_SIZE;
-        self.print_indent(&format!("Operator: {:?}", expr.operator.kind));
+        self.print_indent(&format!("{}Operator{}: {}{}{}", SUBTEXT_COLOR, RESET_COLOR, BLUE_COLOR, expr.operator.kind, RESET_COLOR));
         self.visit_expr(&expr.left);
         self.visit_expr(&expr.right);
         self.indent -= INDENT_SIZE;
     }
 
     fn visit_paren_expr(&mut self, expr: &ASTParenExpr) {
-        self.print_indent("Paren:");
+        self.print_indent(&format!("{}Parenthesized{}:", SUBTEXT_COLOR, RESET_COLOR));
         self.indent += INDENT_SIZE;
         self.visit_expr(&expr.expr);
         self.indent -= INDENT_SIZE;
     }
 
+    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) {
+        self.print_indent(&format!("{}Assignment{}:", SUBTEXT_COLOR, RESET_COLOR));
+        self.indent += INDENT_SIZE;
+        self.print_indent(&format!("{}Name{}: {}{}{}", SUBTEXT_COLOR, RESET_COLOR, LAVENDAR_COLOR, expr.name, RESET_COLOR));
+        self.print_indent(&format!("{}Operator{}: {}{}{}", SUBTEXT_COLOR, RESET_COLOR, BLUE_COLOR, expr.op, RESET_COLOR));
+        self.visit_expr(&expr.value);
+        self.indent -= INDENT_SIZE;
+    }
+
     fn visit_error(&self) {
-        self.print_indent("Error");
+        self.print_indent(&format!("{}Error{}", RED_COLOR, RESET_COLOR));
     }
 
     fn visit_dec(&mut self, dec: &ASTDecExpr) {
         if let TokenKind::Identifier(name) = &dec.identifier.kind {
-            self.print_indent("Dec:");
+            self.print_indent(&format!("{}Dec{}:", SUBTEXT_COLOR, RESET_COLOR));
             self.indent += INDENT_SIZE;
-            self.print_indent(&format!("Var({})", name));
-            self.print_indent(&format!("Vis={}", if dec.vis { "1" } else { "0" }));
-            self.print_indent(&format!("Mut={}", if dec.mut_ { "1" }  else { "0" }));
-            self.print_indent(&format!("Type: {:?}", dec.type_));
+            self.print_indent(&format!("{}Name{}: {}{}{}", SUBTEXT_COLOR, RESET_COLOR, LAVENDAR_COLOR, name, RESET_COLOR));
+            self.print_indent(&format!("{}Vis{}: {}{}{}", SUBTEXT_COLOR, RESET_COLOR, RED_COLOR, if dec.vis { "0x1" } else { "0x0" }, RESET_COLOR));
+            self.print_indent(&format!("{}Mut{}: {}{}{}", SUBTEXT_COLOR, RESET_COLOR, RED_COLOR, if dec.mut_ { "0x1" } else { "0x0" }, RESET_COLOR));
+            self.print_indent(&format!("{}Type{}: {}", SUBTEXT_COLOR, RESET_COLOR, dec.type_.clone().unwrap()));
             self.visit_expr(&dec.initializer);
             self.indent -= INDENT_SIZE;
         }
+    }
+
+    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) {
+        self.print_indent(&format!("{}Unary{}:", SUBTEXT_COLOR, RESET_COLOR));
+        self.indent += INDENT_SIZE;
+        self.print_indent(&format!("{}Operator{}: {}{}{}", SUBTEXT_COLOR, RESET_COLOR, BLUE_COLOR, expr.op.kind, RESET_COLOR));
+        self.visit_expr(&expr.expr);
+        self.indent -= INDENT_SIZE;
     }
 
     // fn visit_cast_expr(&mut self, expr: &ASTCastExpr) {
@@ -145,12 +184,12 @@ impl ASTVisitor for ASTPrinter {
 
     fn visit_valued(&self, kind: &ASTExprKind) {
         match kind {
-            ASTExprKind::Integer(v) => self.print_indent(&format!("Int({})", v)),
-            ASTExprKind::Float(v) => self.print_indent(&format!("Float({})", v)),
-            ASTExprKind::Char(v) => self.print_indent(&format!("Char({})", v)),
-            ASTExprKind::String(v) => self.print_indent(&format!("Str({})", v)),
-            ASTExprKind::Bool(v) => self.print_indent(&format!("Bool({})", v)),
-            ASTExprKind::Error => self.print_indent("Error"),
+            ASTExprKind::Integer(v) => self.print_indent(&format!("{}Int{}({}{}{})", BLUE_COLOR, RESET_COLOR, PEACH_COLOR, v, RESET_COLOR)),
+            ASTExprKind::Float(v) => self.print_indent(&format!("{}Float{}({}{}{})", BLUE_COLOR, RESET_COLOR, PEACH_COLOR, v, RESET_COLOR)),
+            ASTExprKind::Char(v) => self.print_indent(&format!("{}Char{}({}'{}'{})", BLUE_COLOR, RESET_COLOR, GREEN_COLOR, v, RESET_COLOR)),
+            ASTExprKind::String(v) => self.print_indent(&format!("{}Str{}({}\"{}\"{})", BLUE_COLOR, RESET_COLOR, GREEN_COLOR, v, RESET_COLOR)),
+            ASTExprKind::Bool(v) => self.print_indent(&format!("{}Bool{}({}{}{})", BLUE_COLOR, RESET_COLOR, RED_COLOR, v, RESET_COLOR)),
+            ASTExprKind::Variable(v) => self.print_indent(&format!("{}Var{}({}{}{})", BLUE_COLOR, RESET_COLOR, LAVENDAR_COLOR, v, RESET_COLOR)),
             _ => {}
         }
     }
@@ -192,7 +231,7 @@ impl ASTStmt {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ASTExprKind {
     Integer(i64),
     Float(f64),
@@ -201,8 +240,10 @@ pub enum ASTExprKind {
     Bool(bool),
     Binary(ASTBinaryExpr),
     Parenthesized(ASTParenExpr),
+    Assignment(ASTAssignmentExpr),
+    Variable(String),
+    Unary(ASTUnaryExpr),
     Error,
-    // Cast(ASTCastExpr),
 }
 
 impl Display for ASTExprKind {
@@ -215,12 +256,15 @@ impl Display for ASTExprKind {
             ASTExprKind::Bool(_) => write!(f, "Bool"),
             ASTExprKind::Parenthesized(_) => write!(f, "Parenthesized Expression"),
             ASTExprKind::Binary(_) => write!(f, "Binary Expression"),
+            ASTExprKind::Assignment(_) => write!(f, "Assignment Expression"),
+            ASTExprKind::Variable(_) => write!(f, "Variable"),
+            ASTExprKind::Unary(_) => write!(f, "Unary Expression"),
             ASTExprKind::Error => write!(f, "ExprError"),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ASTExpr {
     pub kind: ASTExprKind,
 }
@@ -258,16 +302,33 @@ impl ASTExpr {
         Self::new(ASTExprKind::Parenthesized(ASTParenExpr::new(expr)))
     }
 
+    pub fn assignment(name: String, op: TokenKind, value: ASTExpr) -> Self {
+        let op_kind = match op {
+            TokenKind::Equals       => ASTBinaryOperatorKind::Assign,
+            TokenKind::Plus         => ASTBinaryOperatorKind::AddAssign,
+            TokenKind::Minus        => ASTBinaryOperatorKind::SubtractAssign,
+            TokenKind::Asterisk     => ASTBinaryOperatorKind::MultiplyAssign,
+            TokenKind::Slash        => ASTBinaryOperatorKind::DivideAssign,
+            _ => panic!("unsupported assignment operator"),
+        };
+
+        Self::new(ASTExprKind::Assignment(ASTAssignmentExpr::new(name, op_kind, value)))
+    }
+
+    pub fn variable(name: String) -> Self {
+        Self::new(ASTExprKind::Variable(name))
+    }
+
+    pub fn unary(op: ASTUnaryOperator, expr: ASTExpr) -> Self {
+        Self::new(ASTExprKind::Unary(ASTUnaryExpr::new(op, expr)))
+    }
+
     pub fn error() -> Self {
         Self::new(ASTExprKind::Error)
     }
-
-    // pub fn cast(expr: ASTExpr, target: TokenKind) -> Self {
-    //     Self::new(ASTExprKind::As(ASTCastExpr { expr: Box::new(expr), target }))
-    // }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ASTBinaryExpr {
     pub left: Box<ASTExpr>,
     pub right: Box<ASTExpr>,
@@ -280,7 +341,7 @@ impl ASTBinaryExpr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ASTBinaryOperator {
     pub kind: ASTBinaryOperatorKind,
     pub token: Token,
@@ -298,20 +359,43 @@ impl ASTBinaryOperator {
             ASTBinaryOperatorKind::Multiply => 2,
             ASTBinaryOperatorKind::Divide => 2,
             ASTBinaryOperatorKind::Modulus => 2,
+            _ => 0,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ASTBinaryOperatorKind {
+    Assign,
     Add,
+    AddAssign,
     Subtract,
+    SubtractAssign,
     Multiply,
+    MultiplyAssign,
     Divide,
+    DivideAssign,
     Modulus,
 }
 
-#[derive(Debug)]
+impl Display for ASTBinaryOperatorKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self {
+            ASTBinaryOperatorKind::Assign => write!(f, "Assign (=)"),
+            ASTBinaryOperatorKind::Add => write!(f, "Add (+)"),
+            ASTBinaryOperatorKind::AddAssign => write!(f, "Add (+) & Assign (=)"),
+            ASTBinaryOperatorKind::Subtract => write!(f, "Subtract (-)"),
+            ASTBinaryOperatorKind::SubtractAssign => write!(f, "Subtract (-) & Assign (=)"),
+            ASTBinaryOperatorKind::Multiply => write!(f, "Multiply (*)"),
+            ASTBinaryOperatorKind::MultiplyAssign => write!(f, "Multiply (*) & Assign (=)"),
+            ASTBinaryOperatorKind::Divide => write!(f, "Divide (/)"),
+            ASTBinaryOperatorKind::DivideAssign => write!(f, "Divide (/) & Assign (=)"),
+            ASTBinaryOperatorKind::Modulus => write!(f, "Modulus (%)"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ASTParenExpr {
     pub expr: Box<ASTExpr>,
 }
@@ -322,6 +406,7 @@ impl ASTParenExpr {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ASTDecExpr {
     identifier: Token,
     vis: bool,
@@ -336,7 +421,55 @@ impl ASTDecExpr {
     }
 }
 
-// pub struct ASTCastExpr {
-//     pub expr: Box<ASTExpr>,
-//     pub target: TokenKind, // hier speichern wir den Zieltyp
-// }
+#[derive(Debug, Clone)]
+pub struct ASTAssignmentExpr {
+    name: String,
+    op: ASTBinaryOperatorKind,
+    value: Box<ASTExpr>,
+}
+
+impl ASTAssignmentExpr {
+    pub fn new(name: String, op: ASTBinaryOperatorKind, value: ASTExpr) -> Self {
+        Self { name, op, value: Box::new(value) }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTUnaryExpr {
+    op: ASTUnaryOperator,
+    expr: Box<ASTExpr>,
+}
+
+impl ASTUnaryExpr {
+    pub fn new(op: ASTUnaryOperator, expr: ASTExpr) -> Self {
+        Self { op, expr: Box::new(expr) }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTUnaryOperator {
+    pub kind: ASTUnaryOperatorKind,
+    pub token: Token,
+}
+
+#[derive(Debug, Clone)]
+pub enum ASTUnaryOperatorKind {
+    Negate,   // -
+    Not,      // !
+}
+
+impl Display for ASTUnaryOperatorKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self {
+            ASTUnaryOperatorKind::Negate => write!(f, "Negate (-)"),
+            ASTUnaryOperatorKind::Not => write!(f, "Logical Not (!)"),
+            _ => unreachable!(), // should never happen
+        }
+    }
+}
+
+impl ASTUnaryOperator {
+    pub fn new(kind: ASTUnaryOperatorKind, token: Token) -> Self {
+        Self { kind, token }
+    }
+}

@@ -28,12 +28,12 @@ impl Diagnostic {
 
     fn format_type(&self) -> String {
         let color = match &self.type_ {
-            DiagnosticType::Error(_) => "FF686B",
-            DiagnosticType::Warning(_) => "F5BD60",
-            DiagnosticType::Tip(_) => "AED692",
+            DiagnosticType::Error(_) => "#FF686B",
+            DiagnosticType::Warning(_) => "#F5BD60",
+            DiagnosticType::Tip(_) => "#AED692",
         };
 
-        format!("{}{}{}{}", Color::Bold, Color::FgHex(color.to_string()), self.type_, Color::Reset)
+        format!("{}{}{}{}", Color::Bold, Color::FgHex(color), self.type_, Color::Reset)
     }
 
     fn kind(&self) -> &DiagnosticKind {
@@ -95,6 +95,7 @@ pub enum DiagnosticKind {
     // TypeMismatch { given: DataType, expected: DataType },
     UnknownIdentifier { identifier: String },
     UnknownCharacter { character: char },
+    DuplicateVariable { name: String },
     OutOfBound,
 }
 
@@ -110,6 +111,7 @@ impl Display for DiagnosticKind {
             // DiagnosticKind::TypeMismatch { .. } => write!(f, "Type mismatch"),
             DiagnosticKind::UnknownIdentifier { identifier } => write!(f, "Unknown identifier: {}", identifier),
             DiagnosticKind::UnknownCharacter { character } => write!(f, "Unknown character: {}", character.to_string()),
+            DiagnosticKind::DuplicateVariable { name } => write!(f, "Duplicate variable: {}", name),
             DiagnosticKind::OutOfBound => write!(f, "Out of bound"),
             _ => write!(f, "{}", self),
         }
