@@ -16,21 +16,15 @@ impl Span {
         self.end - self.start
     }
 
-    pub fn slice<'a>(&self, src: &'a str) -> &'a str {
-        &src[self.start..self.end]
-    }
+    // pub fn slice<'a>(&self, src: &'a str) -> &'a str {
+    //     &src[self.start..self.end]
+    // }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
-}
-
-impl Token {
-    pub fn new(kind: TokenKind, span: Span) -> Self {
-        Self { kind, span }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,7 +81,6 @@ pub enum TokenKind {
 
 impl Display for TokenKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        #![allow(unreachable_patterns)]
         match self {
             TokenKind::Keyword(k) => write!(f, "Keyword ({})", k),
             TokenKind::Type(t) => write!(f, "Type ({})", t),
@@ -125,7 +118,6 @@ pub enum Keyword {
 
 impl Display for Keyword {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        #![allow(unreachable_patterns)]
         match self {
             Keyword::Dec => write!(f, "dec"),
             Keyword::Mut => write!(f, "mut"),
@@ -133,9 +125,4 @@ impl Display for Keyword {
             _ => write!(f, "<not yet implemented>"),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Marker {
-    Override,
 }

@@ -1,9 +1,3 @@
-// Modified lexer: hex float support removed
-// Key changes:
-// - read_hex_float_or_int removed
-// - read_number now only supports hex integers when starting with 0x/0X
-// - decimal/scientific float handling unchanged
-
 use super::token::{Token, TokenKind, Span, Keyword};
 use crate::file;
 
@@ -26,10 +20,6 @@ impl Lexer {
             kind,
             span: Span::new(start, end),
         }
-    }
-
-    fn create_raw_token(&mut self, kind: TokenKind, pos: usize) {
-        Token::new(kind, Span::new(pos, pos));
     }
 
     fn peek(&self, n: usize) -> Option<u8> {
@@ -165,27 +155,6 @@ impl Lexer {
         (kind, i)
     }
 
-    // e.g. @override
-    // fn read_marker(&mut self) -> (TokenKind, usize) {
-    //     let mut i = 1; // skip '@'
-
-    //     while let Some(c) = self.peek(i) {
-    //         if (c as char).is_ascii_alphanumeric() || c == b'_' {
-    //             i += 1;
-    //         } else {
-    //             break;
-    //         }
-    //     }
-
-    //     let raw: String = self.input[self.position..self.position + i].iter().map(|&b| b as char).collect();
-    //     let marker = match raw.as_str() {
-    //         "override" => Marker::Override,
-    //         _ => panic!("Unknown marker @{raw}"),
-    //     };
-
-    //     (TokenKind::Marker(marker), i)
-    // }
-
     fn read_number(&mut self) -> (TokenKind, usize) {
         if self.peek(0) == Some(b'0') && matches!(self.peek(1), Some(b'x') | Some(b'X')) {
             self.advance(2);
@@ -311,10 +280,5 @@ impl Lexer {
         }
 
         (TokenKind::String(result), i)
-    }
-
-    // line, column, file name
-    pub fn get_pos(&self) -> usize {
-        self.position
     }
 }

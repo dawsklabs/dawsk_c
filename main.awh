@@ -5,7 +5,19 @@ dec p: (a, c, str) = 1;
 b += (17 - 4);
 b /= 3;
 dec mut d: bool = !true;
-d = 'a'; // toggle boolean value
+d = 'a'; 
+// toggle boolean value
 
 dec mut m: str = "aaaaa";
-m += "bbbb"; // string concatenation
+m += "bbbb"; 
+// string concatenation
+
+dec mut n: i8 = {
+  dec xx: i16 = 16;
+  xx = {
+    dec t = 0;
+    dec y: i8 = 25;
+    y - m + 3
+  };
+  xx
+};

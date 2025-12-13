@@ -7,8 +7,6 @@ pub struct Printer<'a> {
     diagnostics: DiagnosticBagCell,
 }
 
-const PREFIX_LEN: usize = 16;
-
 impl<'a> Printer<'a> {
     pub fn new(source: &'a Source, diagnostics: DiagnosticBagCell) -> Self {
         Self { source, diagnostics }

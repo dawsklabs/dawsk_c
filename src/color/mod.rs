@@ -1,6 +1,18 @@
 use std::fmt::{Display, Formatter, Result};
 
+pub const MOUVE_COLOR: Color = Color::FgHex("#cba6f7");
+pub const LAVENDAR_COLOR: Color = Color::FgHex("#b4befe");
+pub const BLUE_COLOR: Color = Color::FgHex("#89b4fa");
+pub const GREEN_COLOR: Color = Color::FgHex("#a6e3a1");
+pub const FLAMINGO_COLOR: Color = Color::FgHex("#f2cdcd");
+pub const PEACH_COLOR: Color = Color::FgHex("#fab387");
+pub const MAROON_COLOR: Color = Color::FgHex("#eba0ac");
+pub const RED_COLOR: Color = Color::FgHex("#f38ba8");
+pub const SUBTEXT_COLOR: Color = Color::FgHex("#a6adc8");
+pub const RESET_COLOR: Color = Color::Reset;
+
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Color {
     Reset,
     Bold,

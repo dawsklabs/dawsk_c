@@ -1,8 +1,7 @@
 use super::token::{ Token, TokenKind, Keyword };
-use super::{ ASTStmt, ASTStmtKind, ASTExpr, ASTExprKind, ASTBinaryOperator, ASTBinaryOperatorKind, ASTUnaryOperator, ASTUnaryOperatorKind };
+use super::{ ASTStmt, ASTExpr, ASTBinaryOperator, ASTBinaryOperatorKind, ASTUnaryOperator, ASTUnaryOperatorKind };
 use super::types::{ TypeKind, Primitive };
-use super::scope::{ ScopeStack, Symbol };
-use super::eval::Value;
+use super::scope::{ScopeStack, Symbol};
 
 use crate::{ Diagnostic, DiagnosticType, DiagnosticKind, DiagnosticBagCell };
 
@@ -44,7 +43,7 @@ impl Parser {
 
         self.tokens[idx].clone()
     }
-
+    
     pub fn advance(&self, n: usize) {
         self.index.incr(n);
     }
@@ -67,10 +66,6 @@ impl Parser {
             );
         }
         token.clone()
-    }
-
-    pub fn is_at_end(&self) -> bool {
-        self.index.get() as usize >= self.tokens.len()
     }
 
     pub fn expect<F>(&self, check: F, expected_name: String, offset: isize) -> bool
@@ -106,7 +101,9 @@ impl Parser {
             self.consume();
         }
 
-        if self.peek(0).kind == TokenKind::EOF {
+        if self.peek(0).kind == TokenKind::EOF
+            || self.peek(0).kind == TokenKind::RCurly
+        {
             return None;
         }
 
@@ -132,6 +129,43 @@ impl Parser {
         }
     }
 
+    fn parse_block_expr(&self) -> ASTExpr {
+        self.consume(); // '{'
+        self.scopes.push();
+
+        let mut stmts = Vec::new();
+        let mut tail_expr = None;
+
+        while self.peek(0).kind != TokenKind::RCurly
+            && self.peek(0).kind != TokenKind::EOF
+        {
+            match self.peek(0).kind {
+                TokenKind::Keyword(Keyword::Dec) => {
+                    // declarations are ALWAYS statements
+                    stmts.push(self.parse_declare_stmt());
+                }
+
+                _ => {
+                    let expr = self.parse_expr();
+
+                    if self.peek(0).kind == TokenKind::Semicolon {
+                        self.consume();
+                        stmts.push(ASTStmt::expr(expr));
+                    } else {
+                        // no semicolon → must be tail expr
+                        tail_expr = Some(expr);
+                        break;
+                    }
+                }
+            }
+        }
+
+        self.consume_check(TokenKind::RCurly);
+        self.scopes.pop();
+
+        ASTExpr::block(stmts, tail_expr)
+    }
+    
     fn parse_declare_stmt(&self) -> ASTStmt {
         let mut visible = false;
         let mut mutable = false;
@@ -150,8 +184,19 @@ impl Parser {
 
         // identifier: consume and validate
         let identifier_token = self.consume();
-        let identifier_name = match &identifier_token.kind {
-            TokenKind::Identifier(n) => n.clone(),
+        match &identifier_token.kind {
+            TokenKind::Identifier(name) => {
+                if self.scopes.lookup(&name).is_some() {
+                    self.diagnostics_bag.add(
+                        Diagnostic::new(
+                            DiagnosticType::Error(DiagnosticKind::AlreadyDefined {
+                                name: name.to_string(),
+                            }),
+                            identifier_token.span.clone(),
+                        )
+                    );
+                }
+            },
             _ => {
                 self.diagnostics_bag.add(Diagnostic::new(
                     DiagnosticType::Error(DiagnosticKind::ExpectedToken {
@@ -159,8 +204,12 @@ impl Parser {
                     }),
                     identifier_token.span.clone()
                 ));
-                "<error>".to_string()
             }
+        }
+
+        let ident_name = match &identifier_token.kind {
+            TokenKind::Identifier(name) => name.clone(),
+            _ => "<error>".to_string(),
         };
 
         // Optional Type
@@ -182,8 +231,12 @@ impl Parser {
         } else {
             self.consume(); // consume '='
         }
-
-        let expr = self.parse_expr();
+        
+        let expr = if self.peek(0).kind == TokenKind::LCurly {
+            self.parse_block_expr()
+        } else {
+            self.parse_expr()
+        };
 
         // Semicolon required here
         if self.peek(0).kind != TokenKind::Semicolon {
@@ -196,6 +249,13 @@ impl Parser {
         } else {
             self.consume(); // consume ';'
         }
+
+        let _ = self.scopes.define(Symbol {
+            name: ident_name.clone(),
+            type_: type_.clone().unwrap_or(TypeKind::Untyped),
+            mut_: mutable,
+            vis: visible,
+        });
 
         // ASTStmt zurückgeben
         ASTStmt::dec(identifier_token, visible, mutable, type_, expr)
@@ -235,62 +295,13 @@ impl Parser {
                     return TypeKind::Primitive(p);
                 }
 
-                // Vec<T>
-                if name == "Vec" {
-                    self.consume(); // Vec
-
-                    if !self.expect(|k| matches!(k, TokenKind::LAngle), "<".into(), 0) {
-                        return TypeKind::Custom("<error>".into());
+                match name.as_str() {
+                    "Vec" | "Set" | "Map" => self.parse_generic_type(name.clone(), |parser| parser.parse_type()),
+                    _ => {
+                        self.consume();
+                        TypeKind::Custom(name.clone())
                     }
-                    self.consume(); // <
-
-                    let inner = self.parse_type();
-
-                    if !self.expect(|k| matches!(k, TokenKind::RAngle), ">".into(), 0) {
-                        return TypeKind::Vector(Box::new(inner));
-                    }
-                    self.consume(); // >
-
-                    return TypeKind::Vector(Box::new(inner));
                 }
-
-                // Set<T>
-                if name == "Set" {
-                    self.consume();
-
-                    self.expect(|k| matches!(k, TokenKind::LAngle), "<".into(), 0);
-                    self.consume(); // <
-
-                    let inner = self.parse_type();
-
-                    self.expect(|k| matches!(k, TokenKind::RAngle), ">".into(), 0);
-                    self.consume(); // >
-
-                    return TypeKind::Set(Box::new(inner));
-                }
-
-                // Map<K, V>
-                if name == "Map" {
-                    self.consume();
-
-                    self.expect(|k| matches!(k, TokenKind::LAngle), "<".into(), 0);
-                    self.consume(); // <
-
-                    let key = self.parse_type();
-
-                    self.expect(|k| matches!(k, TokenKind::Comma), ",".into(), 0);
-                    self.consume(); // ,
-
-                    let value = self.parse_type();
-
-                    self.expect(|k| matches!(k, TokenKind::RAngle), ">".into(), 0);
-                    self.consume(); // >
-
-                    return TypeKind::Map(Box::new(key), Box::new(value));
-                }
-
-                self.consume();
-                return TypeKind::Custom(name.clone());
             }
 
             // Tuple (<>, <>, ...)
@@ -322,7 +333,7 @@ impl Parser {
                 if r.kind != TokenKind::RParen {
                     self.diagnostics_bag.add(Diagnostic::new(
                         DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                            expected: vec![")".to_string()],
+                            expected: vec!["Right/Closing Paren ')'".to_string()],
                         }),
                         r.span.clone(),
                     ));
@@ -345,9 +356,72 @@ impl Parser {
         }
     }
 
+    fn parse_generic_type<F>(&self, name: String, param_parser: F) -> TypeKind
+    where
+        F: Fn(&Self) -> TypeKind,
+    {
+        self.consume(); // consume typename (z.B. Vec, Set, Map)
+
+        // Prüfen auf '<'
+        if !self.expect(|k| matches!(k, TokenKind::LAngle), "<".into(), 0) {
+            return TypeKind::Custom("<error>".into());
+        }
+        self.consume(); // consume '<'
+
+        // Typen parsen
+        let mut generics = Vec::new();
+        loop {
+            let ty = param_parser(self);
+            generics.push(ty);
+
+            match self.peek(0).kind {
+                TokenKind::Comma => {
+                    self.consume();
+                    continue;
+                }
+                TokenKind::RAngle => break,
+                _ => {
+                    self.diagnostics_bag.add(Diagnostic::new(
+                        DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                            expected: vec![",".into(), ">".into()],
+                        }),
+                        self.peek(0).span.clone(),
+                    ));
+                    break;
+                }
+            }
+        }
+
+        // '>' konsumieren
+        if !self.expect(|k| matches!(k, TokenKind::RAngle), ">".into(), 0) {
+            return TypeKind::Custom("<error>".into());
+        }
+        self.consume(); // '>'
+
+        // Spezifischen Typ zurückgeben
+        match name.as_str() {
+            "Vec" if generics.len() == 1 => TypeKind::Vector(Box::new(generics.remove(0))),
+            "Set" if generics.len() == 1 => TypeKind::Set(Box::new(generics.remove(0))),
+            "Map" if generics.len() == 2 => TypeKind::Map(Box::new(generics.remove(0)), Box::new(generics.remove(0))),
+            _ => TypeKind::Custom(name),
+        }
+    }
+
     fn parse_expr_stmt(&self) -> ASTStmt {
         let expr = self.parse_expr();
-        return ASTStmt::expr(expr)
+
+        if self.peek(0).kind == TokenKind::Semicolon {
+            self.consume();
+            ASTStmt::expr(expr)
+        } else {
+            self.diagnostics_bag.add(Diagnostic::new(
+                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                    expected: vec![";".into()],
+                }),
+                self.peek(0).span.clone(),
+            ));
+            ASTStmt::expr(expr)
+        }
     }
 
     fn parse_expr(&self) -> ASTExpr {
@@ -374,7 +448,7 @@ impl Parser {
     }
 
     fn parse_assignment(&self, name: String, op: TokenKind) -> ASTExpr {
-        let identifier_token = self.consume(); // Identifier
+        self.consume(); // Identifier
 
         // Wenn kombinierter Operator, zwei Tokens überspringen
         if op != TokenKind::Equals {
@@ -420,6 +494,30 @@ impl Parser {
                 TokenKind::Asterisk => ASTBinaryOperatorKind::Multiply,
                 TokenKind::Slash => ASTBinaryOperatorKind::Divide,
                 TokenKind::Percent => ASTBinaryOperatorKind::Modulus,
+                TokenKind::Equals => if self.peek(1).kind == TokenKind::Equals {
+                    self.consume(); // '=='
+                    ASTBinaryOperatorKind::Equal
+                } else {
+                    break;
+                },
+                TokenKind::Exclamation => if self.peek(1).kind == TokenKind::Equals {
+                    self.consume(); // '!='
+                    ASTBinaryOperatorKind::NotEqual
+                } else {
+                    break;
+                },
+                TokenKind::LAngle => if self.peek(1).kind == TokenKind::Equals {
+                    self.consume(); // '<='
+                    ASTBinaryOperatorKind::LessEqual
+                } else {
+                    ASTBinaryOperatorKind::Less
+                },
+                TokenKind::RAngle => if self.peek(1).kind == TokenKind::Equals {
+                    self.consume(); // '>='
+                    ASTBinaryOperatorKind::GreaterEqual
+                } else {
+                    ASTBinaryOperatorKind::Greater
+                },
                 _ => break,
             };
 
@@ -438,31 +536,6 @@ impl Parser {
         left
     }
 
-    fn parse_binary_operator(&self) -> ASTBinaryOperator {
-        let token = self.consume();
-        let kind = match token.kind {
-            TokenKind::Plus => ASTBinaryOperatorKind::Add,
-            TokenKind::Minus => ASTBinaryOperatorKind::Subtract,
-            TokenKind::Asterisk => ASTBinaryOperatorKind::Multiply,
-            TokenKind::Slash => ASTBinaryOperatorKind::Divide,
-            TokenKind::Percent => ASTBinaryOperatorKind::Modulus,
-            _ => {
-                self.diagnostics_bag.add(
-                    Diagnostic::new(
-                        DiagnosticType::Error(
-                            DiagnosticKind::UnexpectedToken {
-                                given: token.kind.clone(),
-                            }
-                        ),
-                        token.span.clone(),
-                    )
-                );
-                panic!()
-            }
-        };
-        ASTBinaryOperator::new(kind, token.clone())
-    }
-
     fn parse_primary_expr(&self) -> ASTExpr {
         let token = self.consume();
 
@@ -477,6 +550,13 @@ impl Parser {
                 _ => ASTExpr::error(),
             }
             TokenKind::Identifier(name) => {
+                if self.scopes.lookup(&name).is_none() {
+                    self.diagnostics_bag.add(Diagnostic::new(
+                        DiagnosticType::Error(DiagnosticKind::UnknownIdentifier { identifier: name.clone() }),
+                        token.span.clone(),
+                    ));
+                    return ASTExpr::error();
+                }
                 ASTExpr::variable(name)
             }
             TokenKind::LParen => {
@@ -494,7 +574,7 @@ impl Parser {
                     self.diagnostics_bag.add(
                         Diagnostic::new(
                             DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                                expected: vec!["Right/Opening Parenthesis".to_string()],
+                                expected: vec!["Right/Closing Parenthesis ')'".to_string()],
                             }),
                             token.span.clone(),
                         )
@@ -503,6 +583,7 @@ impl Parser {
                 }
                 ASTExpr::parenthesized(expr)
             }
+            TokenKind::LCurly => self.parse_block_expr(),
             _ => {
                 dbg!(&token.kind);
                 self.diagnostics_bag.add(

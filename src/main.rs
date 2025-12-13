@@ -7,7 +7,6 @@ use ast::lexer::Lexer;
 use ast::token::TokenKind;
 use ast::AST;
 use ast::parser::Parser;
-use ast::eval::Evaluator;
 use diagnostics::{
     Diagnostic, DiagnosticBag, DiagnosticBagCell, 
     DiagnosticKind, DiagnosticType, printer::Printer,
@@ -64,7 +63,7 @@ fn main() {
         if t.kind == TokenKind::EOF {
             break; // Stop parsing when EOF is encountered
         }
-        println!("{:?}", t);
+        // println!("{:?}", t);
     }
 
     let mut ast = AST::new();
@@ -80,10 +79,6 @@ fn main() {
     }
 
     ast.visualize();
-    
-    let mut ev = Evaluator::new();
-    let res = ev.eval_ast(&ast);
-    println!("Result -> {:?}", res);
 
     println!("{}", printer.stringify());
 }
