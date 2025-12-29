@@ -1,15 +1,17 @@
 use std::fmt::{ Display, Formatter, Result };
-use crate::color::{RESET_COLOR, GREEN_COLOR, BLUE_COLOR, MOUVE_COLOR, FLAMINGO_COLOR};
+use crate::color::{RESET_COLOR, GREEN_COLOR, BLUE_COLOR, MOUVE_COLOR, FLAMINGO_COLOR, SUBTEXT_COLOR};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeKind {
     Primitive(Primitive),
     Tuple(Vec<TypeKind>),
-    Vector(Box<TypeKind>),
-    Set(Box<TypeKind>),
-    Map(Box<TypeKind>, Box<TypeKind>),
+    Generic {
+        base: String,
+        args: Vec<TypeKind>,
+    },
     Custom(String), // e.g. structs, custom types, etc...
-    Reference(Box<TypeKind>),
+    Ref(Box<TypeKind>),
+    MutRef(Box<TypeKind>),
     Untyped,
 }
 
@@ -18,14 +20,26 @@ impl Display for TypeKind {
         match self {
             TypeKind::Primitive(p) => write!(f, "{}{}{}", MOUVE_COLOR, p, RESET_COLOR),
             TypeKind::Tuple(t) => {
-                let types: Vec<String> = t.iter().map(|ty| format!("{}{}{}", BLUE_COLOR, ty.to_string(), RESET_COLOR)).collect();
-                write!(f, "({})", types.join(", "))
-            },
-            TypeKind::Vector(v) => write!(f, "{}Vec{}<{}>", GREEN_COLOR, RESET_COLOR, v),
-            TypeKind::Set(inner) => write!(f, "{}Set{}<{}>", GREEN_COLOR, RESET_COLOR, inner),
-            TypeKind::Map(k, v) => write!(f, "{}Map{}<{}, {}>", GREEN_COLOR, RESET_COLOR, k, v),
-            TypeKind::Custom(s) => write!(f, "{}", s),
-            TypeKind::Reference(ref_ty) => write!(f, "{}&{}{}", FLAMINGO_COLOR, ref_ty.to_string(), RESET_COLOR),
+                write!(f, "(")?;
+                for (i, ty) in t.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", ty)?;
+                }
+                write!(f, ")")
+            }
+            TypeKind::Custom(s) => write!(f, "{}{}{}", BLUE_COLOR, s, RESET_COLOR),
+            TypeKind::Ref(inner) => write!(f, "{}&{}{}", FLAMINGO_COLOR, RESET_COLOR, inner),
+            TypeKind::MutRef(inner) => write!(f, "{}&mut {}{}", FLAMINGO_COLOR, RESET_COLOR, inner),
+            TypeKind::Generic { base, args } => {
+                // println!("Generic type: {:?}", self);
+                write!(f, "{}{}{}", GREEN_COLOR, base, RESET_COLOR)?;
+                write!(f, "<")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ">")
+            }
             TypeKind::Untyped => write!(f, "__UNTYPED"),
         }
     }
@@ -56,7 +70,7 @@ impl Display for Primitive {
             Primitive::F64 => write!(f, "f64"),
             Primitive::Bool => write!(f, "bool"),
             Primitive::Char => write!(f, "char"),
-            Primitive::String => write!(f, "str"),
+            Primitive::String => write!(f, "String"),
         }
     }
 }

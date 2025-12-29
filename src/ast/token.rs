@@ -49,10 +49,19 @@ pub enum TokenKind {
     Slash,
     Percent,
 
+    PlusEquals,
+    MinusEquals,
+    AsteriskEquals,
+    SlashEquals,
+
     Equals,
+    DoubleEquals,
+    ExclamationEquals,
 
     And,
+    DoubleAnd,
     Pipe,
+    DoublePipe,
     Caret,
     Tilde,
 
@@ -72,8 +81,14 @@ pub enum TokenKind {
     RBracket,
     LCurly,
     RCurly,
+
     LAngle,
+    DoubleLAngle,
+    LAngleEquals,
+
     RAngle,
+    DoubleRAngle,
+    RAngleEquals,
 
     // Specials
     EOF,
@@ -82,7 +97,6 @@ pub enum TokenKind {
 impl Display for TokenKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
-            TokenKind::Keyword(k) => write!(f, "Keyword ({})", k),
             TokenKind::Type(t) => write!(f, "Type ({})", t),
             TokenKind::Integer(_) => write!(f, "Int"),
             TokenKind::Float(_) => write!(f, "Float"),
@@ -90,7 +104,7 @@ impl Display for TokenKind {
             TokenKind::Char(_) => write!(f, "Char"),
             TokenKind::Identifier(i) => write!(f, "Identifier ({})", i),
             TokenKind::Unknown(_) => write!(f, "<Unknown>"),
-            _ => write!(f, "<not yet implemented>"),
+            _ => write!(f, "{:?}", self),
         }
     }
 }
@@ -98,13 +112,14 @@ impl Display for TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Keyword {
     Dec,
-    Publy,
+    Pub,
     Mut,
     Struct,
     Impl,
     Self_,
     Type,
     Enum,
+    Trait,
     Func,
     True,
     False,
@@ -114,15 +129,4 @@ pub enum Keyword {
     If,
     Else,
     In,
-}
-
-impl Display for Keyword {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        match self {
-            Keyword::Dec => write!(f, "dec"),
-            Keyword::Mut => write!(f, "mut"),
-            Keyword::Publy => write!(f, "publy"),
-            _ => write!(f, "<not yet implemented>"),
-        }
-    }
 }

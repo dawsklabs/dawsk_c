@@ -1,11 +1,13 @@
-use super::token::{ Token, TokenKind, Keyword };
-use super::{ ASTStmt, ASTExpr, ASTBinaryOperator, ASTBinaryOperatorKind, ASTUnaryOperator, ASTUnaryOperatorKind };
+use super::token::{ Token, TokenKind, Keyword, Span };
+use super::{ ASTStmt, ASTStructField, ASTExpr, ASTBinaryOperator, ASTBinaryOperatorKind, ASTUnaryOperator, ASTUnaryOperatorKind };
 use super::types::{ TypeKind, Primitive };
 use super::scope::{ScopeStack, Symbol};
 
 use crate::{ Diagnostic, DiagnosticType, DiagnosticKind, DiagnosticBagCell };
+use crate::abort;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 
 pub struct Counter {
     index: Cell<usize>,
@@ -29,18 +31,32 @@ pub struct Parser {
     tokens: Vec<Token>,
     index: Counter,
     diagnostics_bag: DiagnosticBagCell,
-    scopes: ScopeStack, // neu
+    scopes: ScopeStack,
+    pushed_back: RefCell<VecDeque<Token>>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>, diagnostics_bag: DiagnosticBagCell) -> Self {
-        Self { tokens, index: Counter::new(), diagnostics_bag, scopes: ScopeStack::new() }
+        Self {
+            tokens,
+            index: Counter::new(),
+            diagnostics_bag,
+            scopes: ScopeStack::new(),
+            pushed_back: RefCell::new(VecDeque::new()),
+        }
     }
 
     pub fn peek(&self, offset: isize) -> Token {
-        let idx = self.index.get() as isize + offset;
-        let idx = idx.clamp(0, (self.tokens.len() - 1) as isize) as usize;
+        if offset == 0 {
+            if let Some(tok) = self.pushed_back.borrow().front() {
+                return tok.clone();
+            }
+        }
 
+        let base = self.index.get() as isize + offset
+            - self.pushed_back.borrow().len() as isize;
+
+        let idx = base.clamp(0, (self.tokens.len() - 1) as isize) as usize;
         self.tokens[idx].clone()
     }
     
@@ -49,6 +65,20 @@ impl Parser {
     }
 
     pub fn consume(&self) -> Token {
+        if abort::is_aborted() {
+            return Token {
+                kind: TokenKind::EOF,
+                span: Span {
+                    start: 0,
+                    end: 0,
+                },
+            };
+        }
+
+        if let Some(tok) = self.pushed_back.borrow_mut().pop_front() {
+            return tok;
+        }
+
         self.index.incr(1);
         self.peek(-1)
     }
@@ -65,7 +95,11 @@ impl Parser {
                 )
             );
         }
-        token.clone()
+        token
+    }
+
+    fn push_back(&self, token: Token) {
+        self.pushed_back.borrow_mut().push_front(token);
     }
 
     pub fn expect<F>(&self, check: F, expected_name: String, offset: isize) -> bool
@@ -96,6 +130,10 @@ impl Parser {
     }
 
     pub fn next_stmt(&self) -> Option<ASTStmt> {
+        if abort::is_aborted() {
+            return None;
+        }
+
         // Semicolons zwischen Statements ignorieren
         while self.peek(0).kind == TokenKind::Semicolon {
             self.consume();
@@ -167,13 +205,191 @@ impl Parser {
     }
     
     fn parse_declare_stmt(&self) -> ASTStmt {
-        let mut visible = false;
-        let mut mutable = false;
-
         self.consume(); // consume 'dec' token
 
-        if self.peek(0).kind == TokenKind::Keyword(Keyword::Publy) {
-            visible = true;
+        if self.peek(0).kind == TokenKind::LParen {
+            match self.peek(1).kind {
+                TokenKind::Keyword(Keyword::Struct) => self.parse_struct_dec(),
+                // TokenKind::Keyword(Keyword::Enum) => self.parse_enum_declaration(),
+                // TokenKind::Keyword(Keyword::Trait) => self.parse_trait_declaration(),
+                // TokenKind::Keyword(Keyword::Type) => self.parse_type_declaration(),
+                // TokenKind::Keyword(Keyword::Const) => self.parse_const_declaration(),
+                _ => panic!("Unexpected token after 'dec'"),
+            }
+        } else {
+            self.parse_var_declaration()
+        }
+    }
+
+    fn parse_struct_dec(&self) -> ASTStmt {
+        // (struct)
+        self.consume_check(TokenKind::LParen);
+        self.consume_check(TokenKind::Keyword(Keyword::Struct));
+        self.consume_check(TokenKind::RParen);
+
+        // optional pub
+        let public = if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
+            self.consume();
+            true
+        } else {
+            false
+        };
+
+        // Struct-Name
+        let identifier = self.consume();
+        if !matches!(identifier.kind, TokenKind::Identifier(_)) {
+            self.diagnostics_bag.add(Diagnostic::new(
+                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                    expected: vec!["Struct identifier".into()],
+                }),
+                identifier.span.clone(),
+            ));
+        }
+
+        // optionale Generics: <T, U>
+        let generics = if self.peek(0).kind == TokenKind::LAngle {
+            Some(self.parse_generic_args())
+        } else {
+            None
+        };
+
+        if self.peek(0).kind == TokenKind::LCurly {
+            // {
+            self.consume();
+
+            // Fields
+            let mut fields = Vec::new();
+            while self.peek(0).kind != TokenKind::RCurly
+                && self.peek(0).kind != TokenKind::EOF
+            {
+                fields.push(self.parse_struct_field());
+            }
+
+            // }
+            self.consume_check(TokenKind::RCurly);
+
+            // ;
+            if self.peek(0).kind == TokenKind::Semicolon {
+                self.consume();
+            } else {
+                self.diagnostics_bag.add(Diagnostic::new(
+                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                        expected: vec!["Semicolon ';'".into()],
+                    }),
+                    self.peek(0).span.clone(),
+                ));
+            }
+
+            ASTStmt::structDec(identifier, public, generics, fields)
+        } else {
+            // (
+            self.consume_check(TokenKind::LParen);
+
+            // Fields
+            let mut fields = Vec::new();
+            if self.peek(0).kind != TokenKind::RParen {
+                loop {
+                    fields.push(self.parse_type());
+
+                    match self.peek(0).kind {
+                        TokenKind::Comma => {
+                            self.consume();
+
+                            // trailing comma erlaubt
+                            if self.peek(0).kind == TokenKind::RParen {
+                                break;
+                            }
+                        }
+                        TokenKind::RParen => break,
+                        _ => {
+                            self.diagnostics_bag.add(Diagnostic::new(
+                                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                                    expected: vec![",".into(), ")".into()],
+                                }),
+                                self.peek(0).span.clone(),
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // )
+            self.consume_check(TokenKind::RParen);
+
+            // ;
+            if self.peek(0).kind == TokenKind::Semicolon {
+                self.consume();
+            } else {
+                self.diagnostics_bag.add(Diagnostic::new(
+                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                        expected: vec!["Semicolon ';'".into()],
+                    }),
+                    self.peek(0).span.clone(),
+                ));
+            }
+
+            ASTStmt::tupleStructDec(identifier, public, generics, fields)
+        }
+    }
+
+    fn parse_struct_field(&self) -> ASTStructField {
+        // optional pub
+        let pub_ = if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
+            self.consume();
+            true
+        } else {
+            false
+        };
+
+        // Feldname
+        let identifier = self.consume();
+        if !matches!(identifier.kind, TokenKind::Identifier(_)) {
+            self.diagnostics_bag.add(Diagnostic::new(
+                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                    expected: vec!["Field identifier".into()],
+                }),
+                identifier.span.clone(),
+            ));
+        }
+
+        // :
+        self.consume_check(TokenKind::Colon);
+
+        // Typ
+        let type_ = self.parse_type();
+
+        // ,
+        match self.peek(0).kind {
+            TokenKind::Comma => {
+                self.consume();
+            }
+            TokenKind::RCurly => {
+                // ok: letztes Feld ohne Komma
+            }
+            _ => {
+                self.diagnostics_bag.add(Diagnostic::new(
+                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
+                        expected: vec![",".into(), "}".into()],
+                    }),
+                    self.peek(0).span.clone(),
+                ));
+            }
+        }
+
+        ASTStructField {
+            identifier,
+            pub_,
+            type_,
+        }
+    }
+
+    fn parse_var_declaration(&self) -> ASTStmt {
+        let mut public = false;
+        let mut mutable = false;
+
+        if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) { // pub (gr.: public)
+            public = true;
             self.consume();
         }
 
@@ -209,7 +425,7 @@ impl Parser {
 
         let ident_name = match &identifier_token.kind {
             TokenKind::Identifier(name) => name.clone(),
-            _ => "<error>".to_string(),
+            _ => "__ERROR<Identifier>".to_string(),
         };
 
         // Optional Type
@@ -222,8 +438,8 @@ impl Parser {
         // require '='
         if self.peek(0).kind != TokenKind::Equals {
             self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                    expected: vec!["Equals '='".to_string()]
+                DiagnosticType::Error(DiagnosticKind::UnexpectedToken {
+                    given: self.peek(0).kind
                 }),
                 self.peek(0).span.clone()
             ));
@@ -254,26 +470,58 @@ impl Parser {
             name: ident_name.clone(),
             type_: type_.clone().unwrap_or(TypeKind::Untyped),
             mut_: mutable,
-            vis: visible,
+            pub_: public,
         });
 
         // ASTStmt zurückgeben
-        ASTStmt::dec(identifier_token, visible, mutable, type_, expr)
+        ASTStmt::varDec(identifier_token, public, mutable, type_, expr)
     }
 
     fn parse_type(&self) -> TypeKind {
-        let token = self.peek(0);
+        let mut ty = self.parse_type_atom();
 
-        match &token.kind {
-            // Already parsed primitive or type tokens
-            TokenKind::Type(tk) => {
+        // Solange ein LAngle folgt, Generic-Argumente parsen
+        if self.peek(0).kind == TokenKind::LAngle {
+            let name = match ty {
+                TypeKind::Custom(n) => n,
+                _ => {
+                    self.diagnostics_bag.add(Diagnostic::new(
+                        DiagnosticType::Error(DiagnosticKind::InvalidGenericBase),
+                        self.peek(-1).span.clone(),
+                    ));
+                    "__ERROR<Generic>".into()
+                }
+            };
+
+            let args = self.parse_generic_args();
+            return TypeKind::Generic { base: name, args };
+        }
+
+        ty
+    }
+
+    fn parse_type_atom(&self) -> TypeKind {
+        if self.peek(0).kind == TokenKind::And {
+            self.consume(); // '&'
+
+            if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
                 self.consume();
-                return tk.clone();
+                let inner = self.parse_type();
+                return TypeKind::MutRef(Box::new(inner));
+            } else {
+                let inner = self.parse_type();
+                return TypeKind::Ref(Box::new(inner));
             }
+        }
 
-            // Custom type
+        let token = self.consume();
+
+        match token.kind {
+            TokenKind::Type(tk) => tk,
+
             TokenKind::Identifier(name) => {
-                let primitive = match name.as_str() {
+                // Primitive als Identifier erlaubt
+                let prim = match name.as_str() {
                     "i8"   => Some(Primitive::I8),
                     "i16"  => Some(Primitive::I16),
                     "i32"  => Some(Primitive::I32),
@@ -286,104 +534,81 @@ impl Parser {
                     "f64"  => Some(Primitive::F64),
                     "bool" => Some(Primitive::Bool),
                     "char" => Some(Primitive::Char),
-                    "str"  => Some(Primitive::String),
+                    "String"  => Some(Primitive::String),
                     _      => None,
                 };
 
-                if let Some(p) = primitive {
-                    self.consume();
-                    return TypeKind::Primitive(p);
-                }
-
-                match name.as_str() {
-                    "Vec" | "Set" | "Map" => self.parse_generic_type(name.clone(), |parser| parser.parse_type()),
-                    _ => {
-                        self.consume();
-                        TypeKind::Custom(name.clone())
-                    }
-                }
+                prim.map(TypeKind::Primitive)
+                    .unwrap_or(TypeKind::Custom(name))
             }
 
-            // Tuple (<>, <>, ...)
             TokenKind::LParen => {
-                self.consume(); // '('
-
                 let mut elems = Vec::new();
 
-                // Empty tuple ()
-                if self.peek(0).kind == TokenKind::RParen {
-                    self.consume();
-                    return TypeKind::Tuple(elems);
-                }
+                if self.peek(0).kind != TokenKind::RParen {
+                    loop {
+                        elems.push(self.parse_type());
 
-                loop {
-                    let ty = self.parse_type();
-                    elems.push(ty);
-
-                    if self.peek(0).kind == TokenKind::Comma {
-                        self.consume();
-                        continue;
+                        if self.peek(0).kind == TokenKind::Comma {
+                            self.consume();
+                        } else {
+                            break;
+                        }
                     }
-
-                    break;
                 }
 
-                // Expect ')'
-                let r = self.consume();
-                if r.kind != TokenKind::RParen {
-                    self.diagnostics_bag.add(Diagnostic::new(
-                        DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                            expected: vec!["Right/Closing Paren ')'".to_string()],
-                        }),
-                        r.span.clone(),
-                    ));
-                }
-
-                return TypeKind::Tuple(elems);
+                self.consume_check(TokenKind::RParen);
+                TypeKind::Tuple(elems)
             }
 
             _ => {
-                // Unknown / invalid type
-                self.consume();
                 self.diagnostics_bag.add(Diagnostic::new(
                     DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                        expected: vec![ "Type".into() ],
+                        expected: vec!["Type".into()],
                     }),
-                    token.span.clone(),
+                    token.span,
                 ));
-                return TypeKind::Custom("<error>".into());
+                TypeKind::Custom("__ERROR<Type>".into())
             }
         }
     }
 
-    fn parse_generic_type<F>(&self, name: String, param_parser: F) -> TypeKind
-    where
-        F: Fn(&Self) -> TypeKind,
-    {
-        self.consume(); // consume typename (z.B. Vec, Set, Map)
+    fn parse_generic_args(&self) -> Vec<TypeKind> {
+        self.consume_check(TokenKind::LAngle); // consume '<'
+        let mut args = Vec::new();
 
-        // Prüfen auf '<'
-        if !self.expect(|k| matches!(k, TokenKind::LAngle), "<".into(), 0) {
-            return TypeKind::Custom("<error>".into());
-        }
-        self.consume(); // consume '<'
-
-        // Typen parsen
-        let mut generics = Vec::new();
         loop {
-            let ty = param_parser(self);
-            generics.push(ty);
+            // Ein Type als Argument
+            args.push(self.parse_type());
 
             match self.peek(0).kind {
                 TokenKind::Comma => {
                     self.consume();
-                    continue;
                 }
-                TokenKind::RAngle => break,
+
+                TokenKind::RAngle => {
+                    self.consume(); // normales '>'
+                    break;
+                }
+
+                TokenKind::DoubleRAngle => {
+                    // '>>' aufteilen in zwei '>'
+                    let tok = self.consume();
+
+                    let second = Token {
+                        kind: TokenKind::RAngle,
+                        span: Span { start: tok.span.start + 1, end: tok.span.end },
+                    };
+
+                    // erstes > verwenden, zweites pushback
+                    self.push_back(second);
+                    break;
+                }
+
                 _ => {
                     self.diagnostics_bag.add(Diagnostic::new(
                         DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                            expected: vec![",".into(), ">".into()],
+                            expected: vec![">".into()],
                         }),
                         self.peek(0).span.clone(),
                     ));
@@ -392,19 +617,7 @@ impl Parser {
             }
         }
 
-        // '>' konsumieren
-        if !self.expect(|k| matches!(k, TokenKind::RAngle), ">".into(), 0) {
-            return TypeKind::Custom("<error>".into());
-        }
-        self.consume(); // '>'
-
-        // Spezifischen Typ zurückgeben
-        match name.as_str() {
-            "Vec" if generics.len() == 1 => TypeKind::Vector(Box::new(generics.remove(0))),
-            "Set" if generics.len() == 1 => TypeKind::Set(Box::new(generics.remove(0))),
-            "Map" if generics.len() == 2 => TypeKind::Map(Box::new(generics.remove(0)), Box::new(generics.remove(0))),
-            _ => TypeKind::Custom(name),
-        }
+        args
     }
 
     fn parse_expr_stmt(&self) -> ASTStmt {
@@ -415,8 +628,8 @@ impl Parser {
             ASTStmt::expr(expr)
         } else {
             self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                    expected: vec![";".into()],
+                DiagnosticType::Error(DiagnosticKind::UnexpectedToken {
+                    given: self.peek(0).kind,
                 }),
                 self.peek(0).span.clone(),
             ));
@@ -426,37 +639,23 @@ impl Parser {
 
     fn parse_expr(&self) -> ASTExpr {
         if let TokenKind::Identifier(ref name) = self.peek(0).kind {
-            // Nächstes Token prüfen: '=' oder Operator + '='
-            let next = self.peek(1).kind.clone();
-
-            match next {
-                TokenKind::Equals => {
-                    return self.parse_assignment(name.clone(), TokenKind::Equals);
-                }
-                TokenKind::Plus | TokenKind::Minus | TokenKind::Asterisk | TokenKind::Slash | TokenKind::Percent => {
-                    // Prüfen, ob danach '=' kommt
-                    if self.peek(2).kind == TokenKind::Equals {
-                        let op_kind = next;
-                        return self.parse_assignment(name.clone(), op_kind);
-                    }
+            match self.peek(1).kind {
+                TokenKind::Equals | TokenKind::PlusEquals | TokenKind::MinusEquals | TokenKind::AsteriskEquals | TokenKind::SlashEquals => {
+                    return self.parse_assignment(name.clone());
                 }
                 _ => {}
             }
         }
 
+        // Other --> Binary Expr (incl. '==', '!=', '<=', '>=')
         self.parse_binary_expr(0)
     }
 
-    fn parse_assignment(&self, name: String, op: TokenKind) -> ASTExpr {
+    fn parse_assignment(&self, name: String) -> ASTExpr {
         self.consume(); // Identifier
 
-        // Wenn kombinierter Operator, zwei Tokens überspringen
-        if op != TokenKind::Equals {
-            self.consume(); // Operator (+, -, ...) 
-            self.consume(); // '='
-        } else {
-            self.consume(); // '='
-        }
+        // Consume Operator Token
+        let op = self.consume().kind;
 
         let rhs = self.parse_expr();
 
@@ -464,22 +663,47 @@ impl Parser {
     }
 
     fn parse_unary_expr(&self) -> ASTExpr {
-        let token = self.peek(0);
+        match self.peek(0).kind {
+            TokenKind::Minus => {
+                let tok = self.consume();
+                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::Negate, tok);
+                ASTExpr::unary(op, self.parse_unary_expr())
+            }
 
-        let op_kind = match token.kind {
-            TokenKind::Minus => Some(ASTUnaryOperatorKind::Negate),
-            TokenKind::Exclamation => Some(ASTUnaryOperatorKind::Not),
-            _ => None,
-        };
+            TokenKind::Exclamation => {
+                let tok = self.consume();
+                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::Not, tok);
+                ASTExpr::unary(op, self.parse_unary_expr())
+            }
 
-        if let Some(kind) = op_kind {
-            let op_token = self.consume();
-            let expr = self.parse_unary_expr(); // Rekursiv für mehrere unäre Operatoren
-            let op = ASTUnaryOperator::new(kind, op_token);
-            return ASTExpr::unary(op, expr);
+            TokenKind::Tilde => {
+                let tok = self.consume();
+                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::BitNot, tok);
+                ASTExpr::unary(op, self.parse_unary_expr())
+            }
+
+            TokenKind::And => {
+                let amp = self.consume();
+
+                let kind = if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
+                    self.consume();
+                    ASTUnaryOperatorKind::RefMut
+                } else {
+                    ASTUnaryOperatorKind::Ref
+                };
+
+                let op = ASTUnaryOperator::new(kind, amp);
+                ASTExpr::unary(op, self.parse_primary_expr())
+            }
+
+            TokenKind::Asterisk => {
+                let tok = self.consume();
+                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::Deref, tok);
+                ASTExpr::unary(op, self.parse_primary_expr())
+            }
+
+            _ => self.parse_primary_expr(),
         }
-
-        self.parse_primary_expr()
     }
 
     fn parse_binary_expr(&self, precedence: u8) -> ASTExpr {
@@ -487,48 +711,45 @@ impl Parser {
 
         loop {
             let op_token = self.peek(0);
-
-            let op_kind = match op_token.kind {
+            let op_kind = match &op_token.kind {
                 TokenKind::Plus => ASTBinaryOperatorKind::Add,
                 TokenKind::Minus => ASTBinaryOperatorKind::Subtract,
                 TokenKind::Asterisk => ASTBinaryOperatorKind::Multiply,
                 TokenKind::Slash => ASTBinaryOperatorKind::Divide,
                 TokenKind::Percent => ASTBinaryOperatorKind::Modulus,
-                TokenKind::Equals => if self.peek(1).kind == TokenKind::Equals {
-                    self.consume(); // '=='
-                    ASTBinaryOperatorKind::Equal
-                } else {
-                    break;
-                },
-                TokenKind::Exclamation => if self.peek(1).kind == TokenKind::Equals {
-                    self.consume(); // '!='
-                    ASTBinaryOperatorKind::NotEqual
-                } else {
-                    break;
-                },
-                TokenKind::LAngle => if self.peek(1).kind == TokenKind::Equals {
-                    self.consume(); // '<='
-                    ASTBinaryOperatorKind::LessEqual
-                } else {
-                    ASTBinaryOperatorKind::Less
-                },
-                TokenKind::RAngle => if self.peek(1).kind == TokenKind::Equals {
-                    self.consume(); // '>='
-                    ASTBinaryOperatorKind::GreaterEqual
-                } else {
-                    ASTBinaryOperatorKind::Greater
-                },
+
+                // Vergleichsoperatoren
+                TokenKind::DoubleEquals => ASTBinaryOperatorKind::Equal,
+                TokenKind::ExclamationEquals => ASTBinaryOperatorKind::NotEqual,
+
+                TokenKind::LAngle => ASTBinaryOperatorKind::Less,
+                TokenKind::LAngleEquals => ASTBinaryOperatorKind::LessEqual,
+                TokenKind::DoubleLAngle => ASTBinaryOperatorKind::LBitShift,
+                
+                TokenKind::RAngle => ASTBinaryOperatorKind::Greater,
+                TokenKind::RAngleEquals => ASTBinaryOperatorKind::GreaterEqual,
+                TokenKind::DoubleRAngle => ASTBinaryOperatorKind::RBitShift,
+
+                TokenKind::And => ASTBinaryOperatorKind::BitAnd,
+                TokenKind::Pipe => ASTBinaryOperatorKind::BitOr,
+                TokenKind::Caret => ASTBinaryOperatorKind::BitXor,
+
+                TokenKind::DoubleAnd => ASTBinaryOperatorKind::LogicAnd,
+                TokenKind::DoublePipe => ASTBinaryOperatorKind::LogicOr,
+
                 _ => break,
             };
 
             let op = ASTBinaryOperator::new(op_kind, op_token.clone());
             let op_prec = op.prec();
-
             if op_prec <= precedence {
                 break;
             }
 
-            self.consume(); // consume operator
+            // Consume Header Token
+            self.consume();
+
+            // right hand side Expression
             let right = self.parse_binary_expr(op_prec);
             left = ASTExpr::binary(left, right, op);
         }
@@ -591,8 +812,6 @@ impl Parser {
                         DiagnosticType::Error(DiagnosticKind::ExpectedExpression {
                             expected: vec![
                                 "Expression".to_string(),
-                                "Value".to_string(),
-                                "Function Call".to_string(),
                             ],
                         }),
                         token.span.clone()

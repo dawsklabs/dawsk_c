@@ -10,7 +10,7 @@ pub struct Symbol {
     pub name: String,
     pub type_: TypeKind,
     pub mut_: bool,
-    pub vis: bool,
+    pub pub_: bool,
 }
 
 #[derive(Debug)]

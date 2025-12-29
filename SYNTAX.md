@@ -1,52 +1,66 @@
-```c
+```
 get sys::prc; // imports a module
 
-dec m: i8 = -15;
+dec(const) m: i8 = -15; // constants
+dec m: i8 = -15; // variables
 
 dec mut x: f32 = 18e-1;
 
-dec publy t = 4 - 0.3;
+dec pub t: f32 = 4 - 0.3;
 
-dec publy mut z: f32 = x + t; // first 'publy' and afterwards 'mut'
+dec pub mut z: f32 = x + t; // first 'pub', 'mut' afterwards
 
-dec b = &z;
+dec c = &(&mut z);  // c: &(&mut f32) (explizit); ref takes the same type (should be logical) but as ref...
 
-struct MyStruct {
-    a: i8 publy,
-    b: u16 publy,
-    c: str,
+dec mut y: = *(*c); // y should then have the value of z
+
+dec(struct) pub MyStruct {
+    pub a: i8,
+    pub b: u16,
+    c: String,
     x: f32,
-    t: Vec<u8> publy,
-} publy; // 'publy' at the end due to readability and just overall language design
+    pub t: Vec<u8>,
+};
 
 impl MyStruct {
-    func @overload(operator::add)(&self, other: MyStruct) -> Self { // the name is '@overload(operator::add)' which will trigger a point in den the parser to overload the operator
+    func @overload(operator::add)(&self, other: MyStruct) -> Self {
         dec v: Vec<u8> = self.t.clone();
         v.extend(other.t);
         Self {
             a: self.a + other.a,
             b: self.b + other.b,
-            c: self.c,
+            c: self.c.clone(),
             x: self.x + other.x,
             t: v,
         }
     }
 }
 
-enum Type {
+dec(trait) pub Printable {
+    func print(&self);
+}
+
+impl(Printable) MyStruct {
+    func print(&self) {
+        prc::println("MyStruct values");
+    }
+}
+
+dec(enum) Type {
     A(i32),
     C,
 }
 
-enum MyEnum {
+dec(enum) pub MyEnum {
     A(Type),
     C,
-} publy;
+};
 
-type Age: u16 publy; // ':' cuz its not really a assignment but more like its own declaration syntax
-type Data: (Age, str) publy;
+dec(type) pub Age(u16);
 
-func end() { // function returns nothing... (void)
+dec(type) pub Data(Age, String);
+
+func pub end() { // function is public
     prc::exit(0);
 }
 ```

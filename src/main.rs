@@ -2,6 +2,7 @@ mod ast;
 mod diagnostics;
 mod text;
 mod color;
+mod abort;
 
 use ast::lexer::Lexer;
 use ast::token::TokenKind;
@@ -44,17 +45,16 @@ const BOYKISSER: &str = "
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿⢰⣿⣿⣿⣿⣿⣿⣿⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣏⢡⣠⣤⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇
 ⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⡄⢽⣿⣿⣿⣿⣿⣿⢌⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠆⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠇
 ";
-const MAROON_COLOR: Color = Color::FgHex("#eba0ac");
 
 fn main() {
-    println!("{}{}{}", MAROON_COLOR, BOYKISSER, Color::Reset);
+    println!("{}{}{}", color::MAROON_COLOR, BOYKISSER, Color::Reset);
 
     file::set("main.awh");
     let source = Source::new(file::content());
     let diagnostics_bag: DiagnosticBagCell = Rc::new(DiagnosticBag::new());
     let printer = Printer::new(&source, diagnostics_bag.clone());
 
-    let mut lexer = Lexer::new();
+    let mut lexer = Lexer::new(diagnostics_bag.clone());
     let mut tokens = Vec::new();
 
     loop {
@@ -64,6 +64,10 @@ fn main() {
             break; // Stop parsing when EOF is encountered
         }
         // println!("{:?}", t);
+    }
+
+    if abort::is_aborted() {
+        eprintln!("Parsing aborted.");
     }
 
     let mut ast = AST::new();

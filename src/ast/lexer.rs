@@ -1,17 +1,21 @@
 use super::token::{Token, TokenKind, Span, Keyword};
 use crate::file;
+use crate::diagnostics::{Diagnostic, DiagnosticType, DiagnosticKind, DiagnosticBagCell};
+use crate::abort;
 
 #[derive(Clone)]
 pub struct Lexer {
     input: Vec<u8>,
     position: usize,
+    diagnostics_bag: DiagnosticBagCell,
 }
 
 impl Lexer {
-    pub fn new() -> Self {
+    pub fn new(diagnostics_bag: DiagnosticBagCell) -> Self {
         Self {
             input: file::content(),
             position: 0,
+            diagnostics_bag,
         }
     }
 
@@ -52,27 +56,61 @@ impl Lexer {
             Some(c) if (c as char).is_ascii_alphabetic() => self.read_identifier_or_keyword(),
             // Some(c) if c == b'@' => self.read_marker(),
             Some(c) if (c as char).is_numeric() => self.read_number(),
-            Some(b'+') => (TokenKind::Plus, 1),
-            Some(b'-') => (TokenKind::Minus, 1),
-            Some(b'*') => (TokenKind::Asterisk, 1),
+            Some(b'+') => {
+                match self.peek(1) {
+                    Some(b'=') => (TokenKind::PlusEquals, 2),
+                    _ => (TokenKind::Plus, 1),
+                }
+            },
+            Some(b'-') => {
+                match self.peek(1) {
+                    Some(b'=') => (TokenKind::MinusEquals, 2),
+                    _ => (TokenKind::Minus, 1),
+                }
+            },
+            Some(b'*') => {
+                match self.peek(1) {
+                    Some(b'=') => (TokenKind::AsteriskEquals, 2),
+                    _ => (TokenKind::Asterisk, 1),
+                }
+            },
             Some(b'/') => {
-                // Comments
-                if self.peek(1) == Some(b'/') {
-                    self.advance(2);
-                    self.advance_until(b"\n");
-                    return self.next_token();
-                } else if self.peek(1) == Some(b'*') {
-                    self.advance(2);
-                    self.advance_until(b"*/");
-                    return self.next_token();
-                } else {
-                    (TokenKind::Slash, 1)
+                match self.peek(1) {
+                    // Comments
+                    Some(b'/') => {
+                        self.advance(2);
+                        self.advance_until(b"\n");
+                        return self.next_token();
+                    },
+                    Some(b'*') => {
+                        self.advance(2);
+                        self.advance_until(b"*/");
+                        return self.next_token();
+                    },
+
+                    Some(b'=') => (TokenKind::SlashEquals, 2),
+                    _ => (TokenKind::Slash, 1),
                 }
             },
             Some(b'%') => (TokenKind::Percent, 1),
-            Some(b'=') => (TokenKind::Equals, 1),
-            Some(b'&') => (TokenKind::And, 1),
-            Some(b'|') => (TokenKind::Pipe, 1),
+            Some(b'=') => {
+                match self.peek(1) {
+                    Some(b'=') => (TokenKind::DoubleEquals, 2),
+                    _ => (TokenKind::Equals, 1)
+                }
+            },
+            Some(b'&') => {
+                match self.peek(1) {
+                    Some(b'&') => (TokenKind::DoubleAnd, 2),
+                    _ => (TokenKind::And, 1)
+                }
+            },
+            Some(b'|') => {
+                match self.peek(1) {
+                    Some(b'|') => (TokenKind::DoublePipe, 2),
+                    _ => (TokenKind::Pipe, 1)
+                }
+            },
             Some(b'^') => (TokenKind::Caret, 1),
             Some(b'(') => (TokenKind::LParen, 1),
             Some(b')') => (TokenKind::RParen, 1),
@@ -80,9 +118,26 @@ impl Lexer {
             Some(b']') => (TokenKind::RBracket, 1),
             Some(b'{') => (TokenKind::LCurly, 1),
             Some(b'}') => (TokenKind::RCurly, 1),
-            Some(b'<') => (TokenKind::LAngle, 1),
-            Some(b'>') => (TokenKind::RAngle, 1),
-            Some(b'!') => (TokenKind::Exclamation, 1),
+            Some(b'<') => {
+                match self.peek(1) {
+                    Some(b'<') => (TokenKind::DoubleLAngle, 2),
+                    Some(b'=') => (TokenKind::LAngleEquals, 2),
+                    _ => (TokenKind::LAngle, 1),
+                }
+            },
+            Some(b'>') => {
+                match self.peek(1) {
+                    Some(b'>') => (TokenKind::DoubleRAngle, 2),
+                    Some(b'=') => (TokenKind::RAngleEquals, 2),
+                    _ => (TokenKind::RAngle, 1),
+                }
+            },
+            Some(b'!') => {
+                match self.peek(1) {
+                    Some(b'=') => (TokenKind::ExclamationEquals, 2),
+                    _ => (TokenKind::Exclamation, 1),
+                }
+            },
             Some(b'?') => (TokenKind::Question, 1),
             Some(b'~') => (TokenKind::Tilde, 1),
             Some(b'.') => (TokenKind::Dot, 1),
@@ -92,7 +147,14 @@ impl Lexer {
             Some(b'\'') => self.read_char(),
             Some(b'"') => self.read_string(),
             Some(b'_') => (TokenKind::Underscore, 1),
-            Some(c) => (TokenKind::Unknown(c as char), 1),
+            Some(_) => {
+                self.diagnostics_bag.add(Diagnostic::new(
+                    DiagnosticType::Error(DiagnosticKind::UnknownCharacter),
+                    Span { start: self.position, end: self.position + 1 },
+                ));
+                abort::abort();
+                (TokenKind::EOF, 0)
+            },
             None => (TokenKind::EOF, 0),
         };
         self.advance(len);
@@ -132,14 +194,15 @@ impl Lexer {
             .map(|&b| b as char)
             .collect();
         let kind = match raw.as_str() {
-            "dec" => TokenKind::Keyword(Keyword::Dec), // e.g. dec mod x: i8 = 16;
+            "dec" => TokenKind::Keyword(Keyword::Dec), // e.g. dec x: i8 = 16;
             "mut" => TokenKind::Keyword(Keyword::Mut), // mutable
-            "publy" => TokenKind::Keyword(Keyword::Publy), // publy = public
+            "pub" => TokenKind::Keyword(Keyword::Pub), // pub = public
             "struct" => TokenKind::Keyword(Keyword::Struct),
             "impl" => TokenKind::Keyword(Keyword::Impl),
             "self" => TokenKind::Keyword(Keyword::Self_), // self reference
             "type" => TokenKind::Keyword(Keyword::Type),
             "enum" => TokenKind::Keyword(Keyword::Enum),
+            "trait" => TokenKind::Keyword(Keyword::Trait), // trait = interface
             "func" => TokenKind::Keyword(Keyword::Func),
             "as" => TokenKind::Keyword(Keyword::As), // casting
             "for" => TokenKind::Keyword(Keyword::For),
