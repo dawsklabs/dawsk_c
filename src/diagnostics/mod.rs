@@ -98,6 +98,7 @@ pub enum DiagnosticKind {
     InvalidGenericBase,
     AlreadyDefined { name: String },
     OutOfBound,
+    UnexpectedWhitespace,
 }
 
 impl Display for DiagnosticKind {
@@ -114,6 +115,7 @@ impl Display for DiagnosticKind {
             DiagnosticKind::InvalidGenericBase => write!(f, "Invalid generic base"),
             DiagnosticKind::AlreadyDefined { name } => write!(f, "Variable already defined: {}", name),
             DiagnosticKind::OutOfBound => write!(f, "Out of bound"),
+            DiagnosticKind::UnexpectedWhitespace => write!(f, "Unexpected whitespace (bring them a little closer!)"),
             _ => write!(f, "{}", self),
         }
     }

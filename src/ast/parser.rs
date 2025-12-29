@@ -129,6 +129,18 @@ impl Parser {
         true
     }
 
+    pub fn check_whitespace(&self, starter: Span, next: Span) {
+        if next.start != starter.end {
+            self.diagnostics_bag.add(Diagnostic::new(
+                DiagnosticType::Error(DiagnosticKind::UnexpectedWhitespace),
+                Span {
+                    start: starter.end,
+                    end: next.start,
+                },
+            ));
+        }
+    }
+
     pub fn next_stmt(&self) -> Option<ASTStmt> {
         if abort::is_aborted() {
             return None;
@@ -208,6 +220,7 @@ impl Parser {
         self.consume(); // consume 'dec' token
 
         if self.peek(0).kind == TokenKind::LParen {
+            self.check_whitespace(self.peek(-1).span.clone(), self.peek(0).span.clone());
             match self.peek(1).kind {
                 TokenKind::Keyword(Keyword::Struct) => self.parse_struct_dec(),
                 // TokenKind::Keyword(Keyword::Enum) => self.parse_enum_declaration(),
@@ -248,7 +261,16 @@ impl Parser {
 
         // optionale Generics: <T, U>
         let generics = if self.peek(0).kind == TokenKind::LAngle {
-            Some(self.parse_generic_args())
+            self.check_whitespace(identifier.span.clone(), self.peek(0).span.clone());
+
+            let args = self.parse_generic_args();
+
+            // Prüfe Whitespace zwischen '>' und '('
+            if self.peek(0).kind == TokenKind::LParen {
+                self.check_whitespace(self.tokens[self.index.get() - 1].span.clone(), self.peek(0).span.clone());
+            }
+
+            Some(args)
         } else {
             None
         };
@@ -482,6 +504,8 @@ impl Parser {
 
         // Solange ein LAngle folgt, Generic-Argumente parsen
         if self.peek(0).kind == TokenKind::LAngle {
+            self.check_whitespace(self.peek(-1).span.clone(), self.peek(0).span.clone());
+
             let name = match ty {
                 TypeKind::Custom(n) => n,
                 _ => {
