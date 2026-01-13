@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter, Result};
 
-pub const MOUVE_COLOR: Color = Color::FgHex("#cba6f7");
+pub const MAUVE_COLOR: Color = Color::FgHex("#cba6f7");
 pub const LAVENDAR_COLOR: Color = Color::FgHex("#b4befe");
 pub const BLUE_COLOR: Color = Color::FgHex("#89b4fa");
 pub const GREEN_COLOR: Color = Color::FgHex("#a6e3a1");
@@ -9,12 +9,16 @@ pub const PEACH_COLOR: Color = Color::FgHex("#fab387");
 pub const MAROON_COLOR: Color = Color::FgHex("#eba0ac");
 pub const RED_COLOR: Color = Color::FgHex("#f38ba8");
 pub const SUBTEXT_COLOR: Color = Color::FgHex("#a6adc8");
-pub const RESET_COLOR: Color = Color::Reset;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum Color {
-    Reset,
+    ResetFg,
+    ResetBg,
+    ResetBold,
+    ResetItalic,
+    ResetUnderline,
+    ResetAll,
     Bold,
     Italic,
     Underlined,
@@ -27,7 +31,12 @@ pub enum Color {
 impl Display for Color {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
-            Color::Reset => write!(f, "\x1b[0m"),
+            Color::ResetFg => write!(f, "\x1b[39m"),
+            Color::ResetBg => write!(f, "\x1b[49m"),
+            Color::ResetBold => write!(f, "\x1b[22m"),
+            Color::ResetItalic => write!(f, "\x1b[23m"),
+            Color::ResetUnderline => write!(f, "\x1b[24m"),
+            Color::ResetAll => write!(f, "\x1b[0m"),
             Color::Bold => write!(f, "\x1b[1m"),
             Color::Italic => write!(f, "\x1b[3m"),
             Color::Underlined => write!(f, "\x1b[4m"),

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static ABORT: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 

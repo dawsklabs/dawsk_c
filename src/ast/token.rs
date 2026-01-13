@@ -1,7 +1,7 @@
-use std::fmt::{ Display, Formatter, Result };
-use super::types::TypeKind;
+use super::types::TypeId;
+use std::fmt::{Display, Formatter, Result};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -15,10 +15,6 @@ impl Span {
     pub fn len(&self) -> usize {
         self.end - self.start
     }
-
-    // pub fn slice<'a>(&self, src: &'a str) -> &'a str {
-    //     &src[self.start..self.end]
-    // }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,23 +27,30 @@ pub struct Token {
 pub enum TokenKind {
     // Keywords
     Keyword(Keyword),
-    
+
     // Types
-    Type(TypeKind),
-    Identifier(String),
-    Integer(i64),
+    Type(TypeId),
+    Identifier(&'static str),
+    Integer(u64),
     Float(f64),
+    Byte(u8),
     Char(char),
     String(String),
+    ByteString(Vec<u8>),
+    RawString(String),
+    RawByteString(Vec<u8>),
     Bool(bool),
     Unknown(char),
-    
+
     // Operators
     Plus,
     Minus,
     Asterisk,
     Slash,
     Percent,
+
+    DoublePlus,
+    DoubleMinus,
 
     PlusEquals,
     MinusEquals,
@@ -59,11 +62,10 @@ pub enum TokenKind {
     ExclamationEquals,
 
     And,
-    DoubleAnd,
     Pipe,
-    DoublePipe,
     Caret,
-    Tilde,
+    DoubleAnd,
+    DoublePipe,
 
     // Punctuation
     Dot,
@@ -91,6 +93,7 @@ pub enum TokenKind {
     RAngleEquals,
 
     // Specials
+    Error,
     EOF,
 }
 

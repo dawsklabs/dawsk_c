@@ -1,19 +1,18 @@
-use std::{fs, cell::RefCell};
-use fxhash::FxHashMap;
+use std::collections::HashMap;
+use std::{cell::RefCell, fs};
 
 thread_local! {
-    static FILES: RefCell<FxHashMap<&'static str, Vec<u8>>> =
-        RefCell::new(FxHashMap::default());
+    static FILES: RefCell<HashMap<&'static str, Vec<u8>>> =
+        RefCell::new(HashMap::default());
     static CURRENT_FILE: RefCell<&'static str> =
         RefCell::new("unknown");
 }
 
 pub fn set(file: &'static str) {
-    let bytes = fs::read(file)
-        .unwrap_or({
-            println!("File not found: {}", file);
-            vec![]
-        });
+    let bytes = fs::read(file).unwrap_or({
+        println!("File not found: {}", file);
+        vec![]
+    });
 
     FILES.with(|map| {
         map.borrow_mut().insert(file, bytes);
@@ -31,7 +30,7 @@ pub fn content() -> Vec<u8> {
         let map = map.borrow();
         map.get(get()).cloned()
     }) {
-        return c
+        return c;
     } else {
         return vec![]; // Datei nicht gefunden
     }

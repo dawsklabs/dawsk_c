@@ -1,10 +1,13 @@
-use super::token::{ Token, TokenKind, Keyword, Span };
-use super::{ ASTStmt, ASTStructField, ASTExpr, ASTBinaryOperator, ASTBinaryOperatorKind, ASTUnaryOperator, ASTUnaryOperatorKind };
-use super::types::{ TypeKind, Primitive };
-use super::scope::{ScopeStack, Symbol};
+use super::scope::{ScopeCtx, Symbol};
+use super::token::{Keyword, Span, Token, TokenKind};
+use super::types::{Primitive, TypeCtx, TypeId, TypeKind};
+use super::{
+    ASTBinaryOperator, ASTBinaryOperatorKind, ASTExpr, ASTStmt, ASTStructField, ASTUnaryOperator,
+    ASTUnaryOperatorKind,
+};
 
-use crate::{ Diagnostic, DiagnosticType, DiagnosticKind, DiagnosticBagCell };
 use crate::abort;
+use crate::diagnostics::{DiagnosticBagCell, DiagnosticBuilder, DiagnosticKind};
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -15,7 +18,9 @@ pub struct Counter {
 
 impl Counter {
     pub fn new() -> Self {
-        Self { index: Cell::new(0) }
+        Self {
+            index: Cell::new(0),
+        }
     }
 
     pub fn incr(&self, n: usize) {
@@ -31,17 +36,19 @@ pub struct Parser {
     tokens: Vec<Token>,
     index: Counter,
     diagnostics_bag: DiagnosticBagCell,
-    scopes: ScopeStack,
+    scopes: ScopeCtx,
+    type_ctx: TypeCtx,
     pushed_back: RefCell<VecDeque<Token>>,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>, diagnostics_bag: DiagnosticBagCell) -> Self {
+    pub fn new(tokens: Vec<Token>, diagnostics_bag: DiagnosticBagCell, type_ctx: TypeCtx) -> Self {
         Self {
             tokens,
             index: Counter::new(),
             diagnostics_bag,
-            scopes: ScopeStack::new(),
+            scopes: ScopeCtx::new(),
+            type_ctx,
             pushed_back: RefCell::new(VecDeque::new()),
         }
     }
@@ -53,13 +60,12 @@ impl Parser {
             }
         }
 
-        let base = self.index.get() as isize + offset
-            - self.pushed_back.borrow().len() as isize;
+        let base = self.index.get() as isize + offset - self.pushed_back.borrow().len() as isize;
 
         let idx = base.clamp(0, (self.tokens.len() - 1) as isize) as usize;
         self.tokens[idx].clone()
     }
-    
+
     pub fn advance(&self, n: usize) {
         self.index.incr(n);
     }
@@ -68,10 +74,7 @@ impl Parser {
         if abort::is_aborted() {
             return Token {
                 kind: TokenKind::EOF,
-                span: Span {
-                    start: 0,
-                    end: 0,
-                },
+                span: Span { start: 0, end: 0 },
             };
         }
 
@@ -86,14 +89,15 @@ impl Parser {
     pub fn consume_check(&self, expected: TokenKind) -> Token {
         let token = self.consume();
         if token.kind != expected {
-            self.diagnostics_bag.add(
-                Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::UnexpectedToken { 
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::UnexpectedToken {
                         given: token.kind.clone(),
-                    }),
+                    },
                     token.span.clone(),
                 )
-            );
+                .build(),
+            )
         }
         token
     }
@@ -102,42 +106,18 @@ impl Parser {
         self.pushed_back.borrow_mut().push_front(token);
     }
 
-    pub fn expect<F>(&self, check: F, expected_name: String, offset: isize) -> bool
-    where
-        F: Fn(&TokenKind) -> bool,
-    {
-        let token = self.peek(offset);
-        if !check(&token.kind) {
-            self.diagnostics_bag.add(
-                Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::UnexpectedToken {
-                        given: token.kind.clone(),
-                    }),
-                    token.span.clone(),
-                )
-            );
-            self.diagnostics_bag.add(
-                Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                        expected: vec![expected_name], // nur Name für Meldung
-                    }),
-                    token.span.clone(),
-                )
-            );
-            return false;
-        }
-        true
-    }
-
     pub fn check_whitespace(&self, starter: Span, next: Span) {
         if next.start != starter.end {
-            self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::UnexpectedWhitespace),
-                Span {
-                    start: starter.end,
-                    end: next.start,
-                },
-            ));
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::UnexpectedWhitespace,
+                    Span {
+                        start: starter.end,
+                        end: next.start,
+                    },
+                )
+                .build(),
+            );
         }
     }
 
@@ -148,10 +128,11 @@ impl Parser {
 
         // Semicolons zwischen Statements ignorieren
         while self.peek(0).kind == TokenKind::Semicolon {
-            self.consume();
+            self.advance(1);
         }
 
         if self.peek(0).kind == TokenKind::EOF
+            || self.peek(0).kind == TokenKind::Error
             || self.peek(0).kind == TokenKind::RCurly
         {
             return None;
@@ -162,14 +143,15 @@ impl Parser {
 
     fn parse_stmt(&self) -> ASTStmt {
         let token = self.peek(0);
-        if let TokenKind::Unknown(c) = &token.kind {
-            self.diagnostics_bag.add(
-                Diagnostic::new(
-                    DiagnosticType::Error(
-                        DiagnosticKind::UnknownIdentifier { identifier: c.to_string() }
-                    ),
-                    token.span.clone()
+        if let TokenKind::Unknown(_) = &token.kind {
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::UnexpectedToken {
+                        given: token.kind.clone(),
+                    },
+                    self.peek(0).span,
                 )
+                .build(),
             );
         }
 
@@ -180,15 +162,13 @@ impl Parser {
     }
 
     fn parse_block_expr(&self) -> ASTExpr {
-        self.consume(); // '{'
+        let curly = self.consume(); // '{'
         self.scopes.push();
 
         let mut stmts = Vec::new();
         let mut tail_expr = None;
 
-        while self.peek(0).kind != TokenKind::RCurly
-            && self.peek(0).kind != TokenKind::EOF
-        {
+        while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
             match self.peek(0).kind {
                 TokenKind::Keyword(Keyword::Dec) => {
                     // declarations are ALWAYS statements
@@ -199,7 +179,7 @@ impl Parser {
                     let expr = self.parse_expr();
 
                     if self.peek(0).kind == TokenKind::Semicolon {
-                        self.consume();
+                        self.advance(1);
                         stmts.push(ASTStmt::expr(expr));
                     } else {
                         // no semicolon → must be tail expr
@@ -213,11 +193,14 @@ impl Parser {
         self.consume_check(TokenKind::RCurly);
         self.scopes.pop();
 
-        ASTExpr::block(stmts, tail_expr)
+        let start = curly.span.start;
+        let end = self.peek(-1).span.end;
+
+        ASTExpr::block(stmts, tail_expr, Span { start, end })
     }
-    
+
     fn parse_declare_stmt(&self) -> ASTStmt {
-        self.consume(); // consume 'dec' token
+        self.advance(1); // consume 'dec' token
 
         if self.peek(0).kind == TokenKind::LParen {
             self.check_whitespace(self.peek(-1).span.clone(), self.peek(0).span.clone());
@@ -242,7 +225,7 @@ impl Parser {
 
         // optional pub
         let public = if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
-            self.consume();
+            self.advance(1);
             true
         } else {
             false
@@ -251,12 +234,15 @@ impl Parser {
         // Struct-Name
         let identifier = self.consume();
         if !matches!(identifier.kind, TokenKind::Identifier(_)) {
-            self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                    expected: vec!["Struct identifier".into()],
-                }),
-                identifier.span.clone(),
-            ));
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::ExpectedToken {
+                        expected: vec!["Identifier".into()],
+                    },
+                    self.peek(0).span,
+                )
+                .build(),
+            );
         }
 
         // optionale Generics: <T, U>
@@ -267,7 +253,10 @@ impl Parser {
 
             // Prüfe Whitespace zwischen '>' und '('
             if self.peek(0).kind == TokenKind::LParen {
-                self.check_whitespace(self.tokens[self.index.get() - 1].span.clone(), self.peek(0).span.clone());
+                self.check_whitespace(
+                    self.tokens[self.index.get() - 1].span.clone(),
+                    self.peek(0).span.clone(),
+                );
             }
 
             Some(args)
@@ -277,13 +266,11 @@ impl Parser {
 
         if self.peek(0).kind == TokenKind::LCurly {
             // {
-            self.consume();
+            self.advance(1);
 
             // Fields
             let mut fields = Vec::new();
-            while self.peek(0).kind != TokenKind::RCurly
-                && self.peek(0).kind != TokenKind::EOF
-            {
+            while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
                 fields.push(self.parse_struct_field());
             }
 
@@ -292,17 +279,19 @@ impl Parser {
 
             // ;
             if self.peek(0).kind == TokenKind::Semicolon {
-                self.consume();
+                self.advance(1);
             } else {
-                self.diagnostics_bag.add(Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                        expected: vec!["Semicolon ';'".into()],
-                    }),
-                    self.peek(0).span.clone(),
-                ));
+                let span = self.peek(0).span.clone();
+
+                self.diagnostics_bag.push(
+                    DiagnosticBuilder::error(DiagnosticKind::MissingSemicolon, span.clone())
+                        .label(span.clone(), "expected `;` here")
+                        .suggestion(span, ";", "add a semicolon")
+                        .build(),
+                );
             }
 
-            ASTStmt::structDec(identifier, public, generics, fields)
+            ASTStmt::struct_dec(identifier, public, generics, fields)
         } else {
             // (
             self.consume_check(TokenKind::LParen);
@@ -315,7 +304,7 @@ impl Parser {
 
                     match self.peek(0).kind {
                         TokenKind::Comma => {
-                            self.consume();
+                            self.advance(1);
 
                             // trailing comma erlaubt
                             if self.peek(0).kind == TokenKind::RParen {
@@ -324,12 +313,18 @@ impl Parser {
                         }
                         TokenKind::RParen => break,
                         _ => {
-                            self.diagnostics_bag.add(Diagnostic::new(
-                                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                                    expected: vec![",".into(), ")".into()],
-                                }),
-                                self.peek(0).span.clone(),
-                            ));
+                            self.diagnostics_bag.push(
+                                DiagnosticBuilder::error(
+                                    DiagnosticKind::ExpectedToken {
+                                        expected: vec![
+                                            "Closing/Right Parenthesis ')'".into(),
+                                            "Comma ','".into(),
+                                        ],
+                                    },
+                                    self.peek(0).span,
+                                )
+                                .build(),
+                            );
                             break;
                         }
                     }
@@ -341,24 +336,27 @@ impl Parser {
 
             // ;
             if self.peek(0).kind == TokenKind::Semicolon {
-                self.consume();
+                self.advance(1);
             } else {
-                self.diagnostics_bag.add(Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                        expected: vec!["Semicolon ';'".into()],
-                    }),
-                    self.peek(0).span.clone(),
-                ));
+                self.diagnostics_bag.push(
+                    DiagnosticBuilder::error(
+                        DiagnosticKind::ExpectedToken {
+                            expected: vec!["Colon ':'".into()],
+                        },
+                        self.peek(0).span,
+                    )
+                    .build(),
+                );
             }
 
-            ASTStmt::tupleStructDec(identifier, public, generics, fields)
+            ASTStmt::tuple_struct_dec(identifier, public, generics, fields)
         }
     }
 
     fn parse_struct_field(&self) -> ASTStructField {
         // optional pub
         let pub_ = if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
-            self.consume();
+            self.advance(1);
             true
         } else {
             false
@@ -367,12 +365,15 @@ impl Parser {
         // Feldname
         let identifier = self.consume();
         if !matches!(identifier.kind, TokenKind::Identifier(_)) {
-            self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                    expected: vec!["Field identifier".into()],
-                }),
-                identifier.span.clone(),
-            ));
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::ExpectedToken {
+                        expected: vec!["Identifier".into()],
+                    },
+                    self.peek(0).span,
+                )
+                .build(),
+            );
         }
 
         // :
@@ -384,18 +385,21 @@ impl Parser {
         // ,
         match self.peek(0).kind {
             TokenKind::Comma => {
-                self.consume();
+                self.advance(1);
             }
             TokenKind::RCurly => {
                 // ok: letztes Feld ohne Komma
             }
             _ => {
-                self.diagnostics_bag.add(Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                        expected: vec![",".into(), "}".into()],
-                    }),
-                    self.peek(0).span.clone(),
-                ));
+                self.diagnostics_bag.push(
+                    DiagnosticBuilder::error(
+                        DiagnosticKind::ExpectedToken {
+                            expected: vec!["Comma ','".into()],
+                        },
+                        self.peek(0).span,
+                    )
+                    .build(),
+                );
             }
         }
 
@@ -410,66 +414,75 @@ impl Parser {
         let mut public = false;
         let mut mutable = false;
 
-        if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) { // pub (gr.: public)
+        if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
+            // pub (gr.: public)
             public = true;
-            self.consume();
+            self.advance(1);
         }
 
         if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
             mutable = true;
-            self.consume();
+            self.advance(1);
         }
 
         // identifier: consume and validate
         let identifier_token = self.consume();
-        match &identifier_token.kind {
+        match &identifier_token.kind.clone() {
             TokenKind::Identifier(name) => {
-                if self.scopes.lookup(&name).is_some() {
-                    self.diagnostics_bag.add(
-                        Diagnostic::new(
-                            DiagnosticType::Error(DiagnosticKind::AlreadyDefined {
+                if let Some(sym_id) = self.scopes.lookup_current(&name) {
+                    self.diagnostics_bag.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticKind::AlreadyDefined {
                                 name: name.to_string(),
-                            }),
+                            },
                             identifier_token.span.clone(),
                         )
+                        .help(self.scopes.symbol_span(sym_id), "Already defined here!")
+                        .build(),
                     );
                 }
-            },
+            }
             _ => {
-                self.diagnostics_bag.add(Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                        expected: vec!["Identifier".to_string()]
-                    }),
-                    identifier_token.span.clone()
-                ));
+                self.diagnostics_bag.push(
+                    DiagnosticBuilder::error(
+                        DiagnosticKind::UnexpectedToken {
+                            given: identifier_token.kind.clone(),
+                        },
+                        identifier_token.span.clone(),
+                    )
+                    .build(),
+                );
             }
         }
 
-        let ident_name = match &identifier_token.kind {
-            TokenKind::Identifier(name) => name.clone(),
-            _ => "__ERROR<Identifier>".to_string(),
+        let ident_name = match &identifier_token.kind.clone() {
+            TokenKind::Identifier(name) => name,
+            _ => "__ERROR<Identifier>",
         };
 
         // Optional Type
         let mut type_ = None;
         if self.peek(0).kind == TokenKind::Colon {
-            self.consume(); // skip ':'
+            self.advance(1); // skip ':'
             type_ = Some(self.parse_type());
         }
 
         // require '='
         if self.peek(0).kind != TokenKind::Equals {
-            self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::UnexpectedToken {
-                    given: self.peek(0).kind
-                }),
-                self.peek(0).span.clone()
-            ));
-            if self.peek(0).kind == TokenKind::Equals { } else { self.consume(); }
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::ExpectedToken {
+                        expected: vec!["Equals '='".to_string()],
+                    },
+                    self.peek(0).span.clone(),
+                )
+                .build(),
+            );
+            self.advance(1);
         } else {
-            self.consume(); // consume '='
+            self.advance(1); // consume '='
         }
-        
+
         let expr = if self.peek(0).kind == TokenKind::LCurly {
             self.parse_block_expr()
         } else {
@@ -478,63 +491,72 @@ impl Parser {
 
         // Semicolon required here
         if self.peek(0).kind != TokenKind::Semicolon {
-            self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                    expected: vec!["Semicolon ';'".to_string()],
-                }),
-                self.peek(0).span.clone(),
-            ));
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::ExpectedToken {
+                        expected: vec!["Semicolon ';'".to_string()],
+                    },
+                    self.peek(0).span.clone(),
+                )
+                .build(),
+            );
         } else {
-            self.consume(); // consume ';'
+            self.advance(1); // consume ';'
         }
 
         let _ = self.scopes.define(Symbol {
-            name: ident_name.clone(),
-            type_: type_.clone().unwrap_or(TypeKind::Untyped),
+            name: ident_name,
+            type_: type_
+                .clone()
+                .unwrap_or(self.type_ctx.intern(TypeKind::Untyped)),
             mut_: mutable,
             pub_: public,
+            span: identifier_token.span.clone(),
         });
 
         // ASTStmt zurückgeben
-        ASTStmt::varDec(identifier_token, public, mutable, type_, expr)
+        ASTStmt::var_dec(identifier_token, public, mutable, type_, expr)
     }
 
-    fn parse_type(&self) -> TypeKind {
-        let mut ty = self.parse_type_atom();
+    fn parse_type(&self) -> TypeId {
+        let ty = self.parse_type_atom();
 
         // Solange ein LAngle folgt, Generic-Argumente parsen
         if self.peek(0).kind == TokenKind::LAngle {
             self.check_whitespace(self.peek(-1).span.clone(), self.peek(0).span.clone());
 
-            let name = match ty {
+            let name = match self.type_ctx.get(ty) {
                 TypeKind::Custom(n) => n,
                 _ => {
-                    self.diagnostics_bag.add(Diagnostic::new(
-                        DiagnosticType::Error(DiagnosticKind::InvalidGenericBase),
-                        self.peek(-1).span.clone(),
-                    ));
+                    self.diagnostics_bag.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticKind::InvalidGenericBase,
+                            self.peek(-1).span.clone(),
+                        )
+                        .build(),
+                    );
                     "__ERROR<Generic>".into()
                 }
             };
 
             let args = self.parse_generic_args();
-            return TypeKind::Generic { base: name, args };
+            return self.type_ctx.intern(TypeKind::Generic { base: name, args });
         }
 
         ty
     }
 
-    fn parse_type_atom(&self) -> TypeKind {
+    fn parse_type_atom(&self) -> TypeId {
         if self.peek(0).kind == TokenKind::And {
-            self.consume(); // '&'
+            self.advance(1); // '&'
 
             if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
-                self.consume();
+                self.advance(1);
                 let inner = self.parse_type();
-                return TypeKind::MutRef(Box::new(inner));
+                return self.type_ctx.intern(TypeKind::MutRef(inner));
             } else {
                 let inner = self.parse_type();
-                return TypeKind::Ref(Box::new(inner));
+                return self.type_ctx.intern(TypeKind::Ref(inner));
             }
         }
 
@@ -545,25 +567,29 @@ impl Parser {
 
             TokenKind::Identifier(name) => {
                 // Primitive als Identifier erlaubt
-                let prim = match name.as_str() {
-                    "i8"   => Some(Primitive::I8),
-                    "i16"  => Some(Primitive::I16),
-                    "i32"  => Some(Primitive::I32),
-                    "i64"  => Some(Primitive::I64),
-                    "u8"   => Some(Primitive::U8),
-                    "u16"  => Some(Primitive::U16),
-                    "u32"  => Some(Primitive::U32),
-                    "u64"  => Some(Primitive::U64),
-                    "f32"  => Some(Primitive::F32),
-                    "f64"  => Some(Primitive::F64),
+                let prim = match name {
+                    "i8" => Some(Primitive::I8),
+                    "i16" => Some(Primitive::I16),
+                    "i32" => Some(Primitive::I32),
+                    "i64" => Some(Primitive::I64),
+                    "u8" => Some(Primitive::U8),
+                    "u16" => Some(Primitive::U16),
+                    "u32" => Some(Primitive::U32),
+                    "u64" => Some(Primitive::U64),
+                    "f32" => Some(Primitive::F32),
+                    "f64" => Some(Primitive::F64),
                     "bool" => Some(Primitive::Bool),
                     "char" => Some(Primitive::Char),
-                    "String"  => Some(Primitive::String),
-                    _      => None,
+                    "String" => Some(Primitive::String),
+                    _ => None,
                 };
 
-                prim.map(TypeKind::Primitive)
-                    .unwrap_or(TypeKind::Custom(name))
+                self.type_ctx
+                    .intern(prim.map(TypeKind::Primitive).unwrap_or_else(|| {
+                        // Leak the string once to get a 'static reference
+                        let static_name: &'static str = name;
+                        TypeKind::Custom(static_name)
+                    }))
             }
 
             TokenKind::LParen => {
@@ -574,7 +600,7 @@ impl Parser {
                         elems.push(self.parse_type());
 
                         if self.peek(0).kind == TokenKind::Comma {
-                            self.consume();
+                            self.advance(1);
                         } else {
                             break;
                         }
@@ -582,81 +608,84 @@ impl Parser {
                 }
 
                 self.consume_check(TokenKind::RParen);
-                TypeKind::Tuple(elems)
+                self.type_ctx.intern(TypeKind::Tuple(elems))
             }
 
             _ => {
-                self.diagnostics_bag.add(Diagnostic::new(
-                    DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                        expected: vec!["Type".into()],
-                    }),
-                    token.span,
-                ));
-                TypeKind::Custom("__ERROR<Type>".into())
+                self.diagnostics_bag.push(
+                    DiagnosticBuilder::error(
+                        DiagnosticKind::ExpectedToken {
+                            expected: vec!["Type".into()],
+                        },
+                        token.span,
+                    )
+                    .build(),
+                );
+                self.type_ctx.intern(TypeKind::Custom("__ERROR<Type>"))
             }
         }
     }
 
-    fn parse_generic_args(&self) -> Vec<TypeKind> {
-        self.consume_check(TokenKind::LAngle); // consume '<'
-        let mut args = Vec::new();
+    fn parse_generic_args(&self) -> Vec<TypeId> {
+        self.consume_check(TokenKind::LAngle);
+        let mut elems = Vec::new();
 
         loop {
-            // Ein Type als Argument
-            args.push(self.parse_type());
+            elems.push(self.parse_type());
 
             match self.peek(0).kind {
                 TokenKind::Comma => {
                     self.consume();
                 }
-
                 TokenKind::RAngle => {
-                    self.consume(); // normales '>'
+                    self.consume();
                     break;
                 }
-
                 TokenKind::DoubleRAngle => {
-                    // '>>' aufteilen in zwei '>'
                     let tok = self.consume();
-
-                    let second = Token {
+                    self.push_back(Token {
                         kind: TokenKind::RAngle,
-                        span: Span { start: tok.span.start + 1, end: tok.span.end },
-                    };
-
-                    // erstes > verwenden, zweites pushback
-                    self.push_back(second);
+                        span: Span {
+                            start: tok.span.start + 1,
+                            end: tok.span.end,
+                        },
+                    });
                     break;
                 }
-
                 _ => {
-                    self.diagnostics_bag.add(Diagnostic::new(
-                        DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                            expected: vec![">".into()],
-                        }),
-                        self.peek(0).span.clone(),
-                    ));
+                    self.diagnostics_bag.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticKind::ExpectedToken {
+                                expected: vec![">".into()],
+                            },
+                            self.peek(0).span.clone(),
+                        )
+                        .build(),
+                    );
                     break;
                 }
             }
         }
 
-        args
+        elems
     }
 
     fn parse_expr_stmt(&self) -> ASTStmt {
         let expr = self.parse_expr();
 
         if self.peek(0).kind == TokenKind::Semicolon {
-            self.consume();
+            self.advance(1);
             ASTStmt::expr(expr)
         } else {
-            self.diagnostics_bag.add(Diagnostic::new(
-                DiagnosticType::Error(DiagnosticKind::UnexpectedToken {
-                    given: self.peek(0).kind,
-                }),
-                self.peek(0).span.clone(),
-            ));
+            self.diagnostics_bag.push(
+                DiagnosticBuilder::error(
+                    DiagnosticKind::UnexpectedToken {
+                        given: self.peek(0).kind.clone(),
+                    },
+                    self.peek(0).span,
+                )
+                .build(),
+            );
             ASTStmt::expr(expr)
         }
     }
@@ -664,8 +693,12 @@ impl Parser {
     fn parse_expr(&self) -> ASTExpr {
         if let TokenKind::Identifier(ref name) = self.peek(0).kind {
             match self.peek(1).kind {
-                TokenKind::Equals | TokenKind::PlusEquals | TokenKind::MinusEquals | TokenKind::AsteriskEquals | TokenKind::SlashEquals => {
-                    return self.parse_assignment(name.clone());
+                TokenKind::Equals
+                | TokenKind::PlusEquals
+                | TokenKind::MinusEquals
+                | TokenKind::AsteriskEquals
+                | TokenKind::SlashEquals => {
+                    return self.parse_assignment(name.to_string());
                 }
                 _ => {}
             }
@@ -676,62 +709,101 @@ impl Parser {
     }
 
     fn parse_assignment(&self, name: String) -> ASTExpr {
-        self.consume(); // Identifier
+        if let TokenKind::Identifier(ref name) = self.consume().kind {
+            match self.scopes.lookup(&name) {
+                Some(sym_id) => {
+                    self.scopes.with_symbol(sym_id, |sym| {
+                        if !sym.mut_ {
+                            self.diagnostics_bag.push(
+                                DiagnosticBuilder::error(
+                                    DiagnosticKind::ImmutableVariable,
+                                    self.peek(-1).span,
+                                )
+                                .help(
+                                    sym.span.clone(),
+                                    "Variable defined here. Consider making it mutable!",
+                                )
+                                .build(),
+                            );
+                        }
+                    });
+                }
+                None => {
+                    self.diagnostics_bag.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticKind::UnknownIdentifier {
+                                identifier: name.to_string(),
+                            },
+                            self.peek(-1).span,
+                        )
+                        .note("Variables must be declared before assigning a value!")
+                        .build(),
+                    );
+                }
+            }
+        }
 
         // Consume Operator Token
         let op = self.consume().kind;
 
         let rhs = self.parse_expr();
 
-        ASTExpr::assignment(name, op, rhs)
+        let start = self.peek(-2).span.start; // Identifier
+        let end = rhs.span.end;
+
+        ASTExpr::assignment(name, op, rhs, Span { start, end })
     }
 
     fn parse_unary_expr(&self) -> ASTExpr {
         match self.peek(0).kind {
-            TokenKind::Minus => {
+            TokenKind::Minus | TokenKind::Exclamation | TokenKind::And | TokenKind::Asterisk => {
                 let tok = self.consume();
-                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::Negate, tok);
-                ASTExpr::unary(op, self.parse_unary_expr())
-            }
+                let start = tok.span.start;
 
-            TokenKind::Exclamation => {
-                let tok = self.consume();
-                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::Not, tok);
-                ASTExpr::unary(op, self.parse_unary_expr())
-            }
-
-            TokenKind::Tilde => {
-                let tok = self.consume();
-                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::BitNot, tok);
-                ASTExpr::unary(op, self.parse_unary_expr())
-            }
-
-            TokenKind::And => {
-                let amp = self.consume();
-
-                let kind = if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
-                    self.consume();
-                    ASTUnaryOperatorKind::RefMut
-                } else {
-                    ASTUnaryOperatorKind::Ref
+                let kind = match tok.kind {
+                    TokenKind::Minus => ASTUnaryOperatorKind::Negate,
+                    TokenKind::Exclamation => ASTUnaryOperatorKind::Not,
+                    TokenKind::And => {
+                        if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
+                            self.advance(1);
+                            ASTUnaryOperatorKind::RefMut
+                        } else {
+                            ASTUnaryOperatorKind::Ref
+                        }
+                    }
+                    TokenKind::Asterisk => ASTUnaryOperatorKind::Deref,
+                    _ => unreachable!(),
                 };
 
-                let op = ASTUnaryOperator::new(kind, amp);
-                ASTExpr::unary(op, self.parse_primary_expr())
-            }
+                let op = ASTUnaryOperator::new(kind, tok);
+                let expr = self.parse_unary_expr();
+                let end = expr.span.end;
 
-            TokenKind::Asterisk => {
-                let tok = self.consume();
-                let op = ASTUnaryOperator::new(ASTUnaryOperatorKind::Deref, tok);
-                ASTExpr::unary(op, self.parse_primary_expr())
+                ASTExpr::unary(op, expr, Span { start, end })
             }
-
             _ => self.parse_primary_expr(),
         }
     }
 
+    fn parse_cast_expr(&self) -> ASTExpr {
+        let mut expr = self.parse_unary_expr();
+
+        while self.peek(0).kind == TokenKind::Keyword(Keyword::As) {
+            // let as_tok = self.consume(); // 'as'
+            // self.check_whitespace(expr.span.clone(), self.peek(0).span.clone());
+
+            let ty = self.parse_type();
+            let start = expr.span.start;
+            let end = self.peek(-1).span.end;
+
+            expr = ASTExpr::cast(expr, ty, Span { start, end });
+        }
+
+        expr
+    }
+
     fn parse_binary_expr(&self, precedence: u8) -> ASTExpr {
-        let mut left = self.parse_unary_expr();
+        let mut left = self.parse_cast_expr();
 
         loop {
             let op_token = self.peek(0);
@@ -749,14 +821,14 @@ impl Parser {
                 TokenKind::LAngle => ASTBinaryOperatorKind::Less,
                 TokenKind::LAngleEquals => ASTBinaryOperatorKind::LessEqual,
                 TokenKind::DoubleLAngle => ASTBinaryOperatorKind::LBitShift,
-                
+
                 TokenKind::RAngle => ASTBinaryOperatorKind::Greater,
                 TokenKind::RAngleEquals => ASTBinaryOperatorKind::GreaterEqual,
                 TokenKind::DoubleRAngle => ASTBinaryOperatorKind::RBitShift,
 
                 TokenKind::And => ASTBinaryOperatorKind::BitAnd,
                 TokenKind::Pipe => ASTBinaryOperatorKind::BitOr,
-                TokenKind::Caret => ASTBinaryOperatorKind::BitXor,
+                TokenKind::Caret => ASTBinaryOperatorKind::LogicXor,
 
                 TokenKind::DoubleAnd => ASTBinaryOperatorKind::LogicAnd,
                 TokenKind::DoublePipe => ASTBinaryOperatorKind::LogicOr,
@@ -771,11 +843,11 @@ impl Parser {
             }
 
             // Consume Header Token
-            self.consume();
+            self.advance(1);
 
             // right hand side Expression
             let right = self.parse_binary_expr(op_prec);
-            left = ASTExpr::binary(left, right, op);
+            left = ASTExpr::binary(left, right, op, op_token.span);
         }
 
         left
@@ -785,64 +857,75 @@ impl Parser {
         let token = self.consume();
 
         return match token.kind {
-            TokenKind::Integer(v) => ASTExpr::int(v),
-            TokenKind::Float(v) => ASTExpr::float(v),
-            TokenKind::String(v) => ASTExpr::string(v),
-            TokenKind::Char(v) => ASTExpr::char(v),
-            TokenKind::Keyword(kw) => match kw {
-                Keyword::True => ASTExpr::bool(true),
-                Keyword::False => ASTExpr::bool(false),
-                _ => ASTExpr::error(),
+            TokenKind::Integer(v) => ASTExpr::int(v, token.span),
+            TokenKind::Float(v) => ASTExpr::float(v, token.span),
+            TokenKind::Byte(v) => ASTExpr::byte(v, token.span),
+            TokenKind::Char(v) => ASTExpr::char(v, token.span),
+            TokenKind::String(v) | TokenKind::RawString(v) => ASTExpr::string(v, token.span),
+            TokenKind::ByteString(v) | TokenKind::RawByteString(v) => {
+                ASTExpr::byte_string(v, token.span)
             }
+            TokenKind::Keyword(kw) => match kw {
+                Keyword::True => ASTExpr::bool(true, token.span),
+                Keyword::False => ASTExpr::bool(false, token.span),
+                _ => ASTExpr::error(),
+            },
             TokenKind::Identifier(name) => {
                 if self.scopes.lookup(&name).is_none() {
-                    self.diagnostics_bag.add(Diagnostic::new(
-                        DiagnosticType::Error(DiagnosticKind::UnknownIdentifier { identifier: name.clone() }),
-                        token.span.clone(),
-                    ));
+                    self.diagnostics_bag.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticKind::UnknownIdentifier {
+                                identifier: name.to_string(),
+                            },
+                            token.span.clone(),
+                        )
+                        .label(
+                            token.span.clone(),
+                            "unknown identifier or variable not defined",
+                        )
+                        .build(),
+                    );
                     return ASTExpr::error();
                 }
-                ASTExpr::variable(name)
+                ASTExpr::variable(name, token.span)
             }
             TokenKind::LParen => {
                 let expr = self.parse_expr();
                 let rparen = self.consume();
                 if rparen.kind != TokenKind::RParen {
-                    self.diagnostics_bag.add(
-                        Diagnostic::new(
-                            DiagnosticType::Error(DiagnosticKind::UnexpectedToken {
+                    self.diagnostics_bag.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticKind::UnexpectedToken {
                                 given: token.kind.clone(),
-                            }),
+                            },
                             token.span.clone(),
                         )
-                    );
-                    self.diagnostics_bag.add(
-                        Diagnostic::new(
-                            DiagnosticType::Error(DiagnosticKind::ExpectedToken {
-                                expected: vec!["Right/Closing Parenthesis ')'".to_string()],
-                            }),
-                            token.span.clone(),
-                        )
+                        .label(token.span, "expected ')'")
+                        .build(),
                     );
                     return ASTExpr::error();
                 }
-                ASTExpr::parenthesized(expr)
+                let start = token.span.start;
+                let end = rparen.span.end;
+
+                ASTExpr::parenthesized(expr, Span { start, end })
             }
             TokenKind::LCurly => self.parse_block_expr(),
+            TokenKind::Error => {
+                self.consume();
+                ASTExpr::error()
+            }
             _ => {
                 dbg!(&token.kind);
-                self.diagnostics_bag.add(
-                    Diagnostic::new(
-                        DiagnosticType::Error(DiagnosticKind::ExpectedExpression {
-                            expected: vec![
-                                "Expression".to_string(),
-                            ],
-                        }),
-                        token.span.clone()
+                self.diagnostics_bag.push(
+                    DiagnosticBuilder::error(
+                        DiagnosticKind::ExpectedExpression,
+                        token.span.clone(),
                     )
+                    .build(),
                 );
                 return ASTExpr::error();
             }
-        }
+        };
     }
 }

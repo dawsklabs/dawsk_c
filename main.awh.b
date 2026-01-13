@@ -1,0 +1,38 @@
+dec pub b: X<A, B> = 13 + 15 - 3;
+dec pub x: &i16 = b + 2;
+dec t: &mut Map<&i8, Map<i8, Map<i8, String>>> = 0;
+dec p: (a, c, String) = 1;
+b += (17 - 4);
+b /= 3;
+dec mut d: bool = !true;
+d = 'a';
+// toggle boolean value
+
+// dec d = 16;
+
+dec mut m: String = "aaaaa";
+m += "bbbb";
+// string concatenation
+
+dec o = &(&mut d);
+dec g = *(*o);
+
+dec(struct) MyStruct {
+  pub a: i8,
+};
+
+dec(struct) OtherStruct { a: i8, b: i16 };
+
+dec(struct) A<B, C>(B, C);
+
+dec mut n: i8 = {
+  dec xx: i16 = 16;
+  xx = {
+    dec t = 0;
+    dec y: i8 = 25;
+    y - m + 3e-1
+  };
+  xx
+};
+
+o /= 10;

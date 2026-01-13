@@ -19,3 +19,15 @@
 -   [x] struct declaration
 -   [ ] function declaration
 -   [ ] function calls
+-   [ ] method declarations
+-   [ ] method calls
+-   [x] generics
+-   [ ] traits
+-   [ ] enums
+-   [ ] error handling (panic, try/catch)
+-   [ ] macros
+-   [ ] modules
+-   [ ] attributes
+-   [ ] type inference
+-   [ ] pattern matching
+-   [x] raw string, byte string, raw byte string, byte char

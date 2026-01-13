@@ -1,7 +1,9 @@
-```
+# Syntax
+
+```c
 get sys::prc; // imports a module
 
-dec(const) m: i8 = -15; // constants
+dec(const) m: u8 = b'e'; // constants
 dec m: i8 = -15; // variables
 
 dec mut x: f32 = 18e-1;
