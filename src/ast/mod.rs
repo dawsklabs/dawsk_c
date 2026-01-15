@@ -12,7 +12,7 @@ use crate::color::{
     Color, BLUE_COLOR, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, SUBTEXT_COLOR,
 };
 use token::{Span, Token, TokenKind};
-use types::TypeId;
+use types::TyId;
 
 pub struct AST {
     pub stmts: Vec<ASTStmt>,
@@ -738,7 +738,7 @@ impl ASTBinaryExpr {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ASTBinaryOperator {
     pub kind: ASTBinaryOperatorKind,
     pub token: Token,
@@ -779,7 +779,7 @@ impl ASTBinaryOperator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ASTBinaryOperatorKind {
     // Arithmetic
     Add,

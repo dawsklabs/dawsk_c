@@ -5,7 +5,7 @@ use std::fmt::{Display, Formatter, Result};
 use std::rc::Rc;
 
 use crate::ast::token::{Span, TokenKind};
-use crate::ast::types::{TypeId, TypeVarId};
+use crate::ast::types::{Ty, TyVarId};
 use crate::ast::{ASTBinaryOperatorKind, ASTExprKind, ASTUnaryOperatorKind};
 use crate::color::Color;
 
@@ -239,7 +239,7 @@ pub enum DiagnosticKind {
         expected: TypeId,
     },
     UnresolvedTypeVariable {
-        id: TypeVarId,
+        id: TyVarId,
     },
     UnknownIdentifier {
         identifier: String,
@@ -250,21 +250,22 @@ pub enum DiagnosticKind {
     InvalidGenericBase,
     InvalidBinaryOperator {
         op: ASTBinaryOperatorKind,
-        left: TypeId,
-        right: TypeId,
+        left: Ty,
+        right: Ty,
     },
     InvalidUnaryOperator {
         op: ASTUnaryOperatorKind,
-        ty: TypeId,
+        ty: Ty,
     },
     AlreadyDefined {
         name: String,
     },
+    UnusedExpressionResult,
     ImmutableVariable,
     InvalidAssignmentTarget,
     InvalidCast {
-        from: TypeId,
-        to: TypeId,
+        from: Ty,
+        to: Ty,
     },
     OutOfBound,
     UnexpectedWhitespace,
@@ -313,8 +314,9 @@ impl Display for DiagnosticKind {
                 op, left, right
             ),
             DiagnosticKind::AlreadyDefined { name } => {
-                write!(f, "identifier '{}' already defined", name)
+                write!(f, "'{}' already defined", name)
             }
+            DiagnosticKind::UnusedExpressionResult => write!(f, "unused expression result"),
             DiagnosticKind::ImmutableVariable => write!(f, "immutable variable"),
             DiagnosticKind::InvalidAssignmentTarget => write!(f, "invalid target for assignment"),
             DiagnosticKind::InvalidCast { from, to } => {

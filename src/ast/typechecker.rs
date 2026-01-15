@@ -2,7 +2,7 @@ use crate::ast::scope::{ScopeCtx, Symbol};
 use crate::ast::traits::{TraitCtx, TraitKind};
 use crate::ast::types::{LiteralType, Primitive::*, TypeCtx, TypeId, TypeKind};
 use crate::ast::{
-    ASTBinaryOperatorKind, ASTExpr, ASTExprKind, ASTStmt, ASTStmtKind, ASTVarDecExpr, AST,
+    AST, ASTBinaryOperatorKind, ASTExpr, ASTExprKind, ASTStmt, ASTStmtKind, ASTVarDecExpr
 };
 use crate::diagnostics::{DiagnosticBagCell, DiagnosticBuilder, DiagnosticKind};
 use crate::TokenKind;
@@ -50,7 +50,17 @@ impl TypeChecker {
     fn check_stmt(&mut self, stmt: &ASTStmt) {
         match &stmt.kind {
             ASTStmtKind::Expr(expr) => {
-                self.check_expr(expr);
+                let ty = self.check_expr(expr);
+
+                if !self.is_valid_expr_stmt(expr, ty) {
+                    self.diagnostics_bag.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticKind::UnusedExpressionResult,
+                            expr.span.clone(),
+                        )
+                        .build(),
+                    );
+                }
             }
 
             ASTStmtKind::VarDec(dec) => {
@@ -156,7 +166,7 @@ impl TypeChecker {
                     // Assign-BinOps wie +=, -=
                     AddAssign | SubtractAssign | MultiplyAssign | DivideAssign => {
                         let Some(lhs_sym_id) = (match &bin.left.kind {
-                            ASTExprKind::Variable(name) => self.scopes.lookup(name),
+                            ASTExprKind::Variable(name) => self.scopes.lookup_current(name),
                             _ => None,
                         }) else {
                             self.diagnostics_bag.push(
@@ -177,7 +187,7 @@ impl TypeChecker {
                 }
             }
             ASTExprKind::Assignment(assign) => {
-                let Some(sym_id) = self.scopes.lookup(&assign.name) else {
+                let Some(sym_id) = self.scopes.lookup_current(&assign.name) else {
                     self.diagnostics_bag.push(
                         DiagnosticBuilder::error(
                             DiagnosticKind::UnknownIdentifier { identifier: assign.name.to_string() },
@@ -188,24 +198,18 @@ impl TypeChecker {
                     return self.error_ty;
                 };
 
-                // let rhs = self.check_expr(&assign.value);
-
                 match assign.op {
                     ASTBinaryOperatorKind::AddAssign
                     | ASTBinaryOperatorKind::SubtractAssign
                     | ASTBinaryOperatorKind::MultiplyAssign
                     | ASTBinaryOperatorKind::DivideAssign => {
-                        // let t = self.types.fresh_var();
-
-                        // a + rhs
-                        // self.types.unify(sym.clone().type_, t.clone());
-                        // self.types.unify(rhs, t);
-
-                        self.scopes.symbol_type(sym_id)
+                        let lhs = self.scopes.symbol_type(sym_id);
+                        let rhs = self.check_expr(&assign.value);
+                        let _ = self.types.unify(lhs, rhs);
+                        lhs
                     }
 
                     ASTBinaryOperatorKind::Assign => {
-                        // self.types.unify(sym.clone().type_, rhs);
                         self.scopes.symbol_type(sym_id)
                     }
 
@@ -337,42 +341,69 @@ impl TypeChecker {
         });
     }
 
-    // fn is_valid_cast(&self, from: &TypeKind, to: &TypeKind) -> bool {
-    //     match (from, to) {
-    //         (Primitive(a), Primitive(b)) => match (a, b) {
-    //             // Integer <-> Integer (signed/unsigned erlaubt)
-    //             // (I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | Int,
-    //             //     I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | Int) => true,
+    fn is_valid_expr_stmt(&self, expr: &ASTExpr, ty: TypeId) -> bool {
+        use ASTExprKind::*;
 
-    //             // // Float <-> Float
-    //             // (F32 | F64 | Float, F32 | F64 | Float) => true,
+        match &expr.kind {
+            // explizite Side-Effects
+            Assignment(_) => true,
 
-    //             // // Integer <-> Float
-    //             // (I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | Int, F32 | F64 | Float) => true,
-    //             // (F32 | F64 | Float, I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | Int) => true,
+            // +=, -=, etc (sind bei dir Binary)
+            Binary(bin) => {
+                 match bin.operator.kind {
+                    ASTBinaryOperatorKind::Assign | ASTBinaryOperatorKind::AddAssign | ASTBinaryOperatorKind::SubtractAssign
+                    | ASTBinaryOperatorKind::MultiplyAssign | ASTBinaryOperatorKind::DivideAssign => true,
+                    _ => false,
+                }
+            }
 
-    //             _ => false,
-    //         },
+            // Funktionsaufrufe (falls vorhanden)
+            // Call(_) => true,
 
-    //         // Referenz-Casts explizit verbieten (erstmal)
-    //         (Ref(_), _) | (MutRef(_), _) => false,
-    //         (_, Ref(_)) | (_, MutRef(_)) => false,
+            // Block: prüfen, ob er Side-Effects enthält
+            Block(block) => {
+                block.statements.iter().any(|s| self.stmt_has_side_effect(s))
+            }
 
-    //         _ => false,
-    //     }
-    // }
+            // unit-Typ (z. B. `{}` oder `()`)
+            _ if self.types.types_eq(ty, TypeKind::Tuple(vec![])) => true,
 
-    // fn finish(&self) {
-    //     for id in &self.types.all_vars {
-    //         if !self.types.subs.contains_key(id) {
-    //             self.diagnostics_bag.push(
-    //                 DiagnosticBuilder::error(
-    //                     DiagnosticKind::UnresolvedTypeVariable { id: *id },
-    //                     Span::new(0, 0),
-    //                 )
-    //                 .build(),
-    //             );
-    //         }
-    //     }
-    // }
+            // alles andere → wertlos
+            _ => false,
+        }
+    }
+
+    fn stmt_has_side_effect(&self, stmt: &ASTStmt) -> bool {
+        match &stmt.kind {
+            ASTStmtKind::Expr(expr) => self.expr_has_side_effect(expr),
+            ASTStmtKind::VarDec(_) => true,
+            ASTStmtKind::Return(_) => true,
+            _ => false,
+        }
+    }
+
+    fn expr_has_side_effect(&self, expr: &ASTExpr) -> bool {
+        use ASTExprKind::*;
+
+        match &expr.kind {
+            Assignment(_) => true,
+
+            // Call(_) => true,
+
+            Unary(un) => self.expr_has_side_effect(&un.expr),
+
+            Binary(bin) => {
+                self.expr_has_side_effect(&bin.left)
+                    || self.expr_has_side_effect(&bin.right)
+            }
+
+            Block(block) => block
+                .statements
+                .iter()
+                .any(|s| self.stmt_has_side_effect(s)),
+
+            _ => false,
+        }
+    }
+
 }
