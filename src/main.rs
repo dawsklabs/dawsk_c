@@ -4,19 +4,17 @@ mod text;
 mod color;
 mod abort;
 
-use std::rc::Rc;
-
 use ast::lexer::Lexer;
 use ast::token::TokenKind;
 use ast::AST;
 use ast::parser::Parser;
 use ast::typechecker::TypeChecker;
-use ast::types::TypeCtx;
 use ast::traits::TraitCtx;
-use diagnostics::{ DiagnosticBag, DiagnosticBagCell, printer::Printer };
+use diagnostics::{ DiagnosticBag, printer::Printer };
 use text::{ Source, file };
 use color::{ Color, MAROON_COLOR };
 
+use crate::ast::{scope::{NameInterner, ScopeCtx}, types::{InferCtx, SymbolInterner, TyInterner}};
 
 const BOYKISSER: &str = "
 ⠀⠀⠀⠀⠀⣤⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -47,61 +45,63 @@ const BOYKISSER: &str = "
 ⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⡄⢽⣿⣿⣿⣿⣿⣿⢌⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠆⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠇
 ";
 
+pub struct Compiler {
+    ty_interner: TyInterner,
+    infer_ctx: InferCtx,
+    trait_ctx: TraitCtx,
+    scopes: ScopeCtx,
+    name_interner: NameInterner,
+    symbol_interner: SymbolInterner,
+    diagnostics: DiagnosticBag,
+}
+
 fn main() {
     println!("{}{}{}", MAROON_COLOR, BOYKISSER, Color::ResetAll);
 
     file::set("main.awh");
+
     let source = Source::new(file::content());
-    let types = TypeCtx::new();
-    let trait_ctx = TraitCtx::new(&types);
 
-    let diagnostics_bag: DiagnosticBagCell = Rc::new(DiagnosticBag::new());
-    let printer = Printer::new(&source, diagnostics_bag.clone());
+    let mut compiler = Compiler {
+        ty_interner: TyInterner::new(),
+        infer_ctx: InferCtx::new(),
+        trait_ctx: TraitCtx::new(),
+        scopes: ScopeCtx::new(),
+        name_interner: NameInterner::new(),
+        symbol_interner: SymbolInterner::new(),
+        diagnostics: DiagnosticBag::new(),
+    };
 
-    let mut lexer = Lexer::new(diagnostics_bag.clone());
+    // Lexer
+    let mut lexer = Lexer::new(&mut compiler);
     let mut tokens = Vec::new();
 
     loop {
         let t = lexer.next_token();
         tokens.push(t.clone());
         if t.kind == TokenKind::EOF || t.kind == TokenKind::Error {
-            break; // Stop parsing when EOF is encountered
+            break;
         }
-        // println!("{:?}", t);
     }
 
-    if abort::is_aborted() {
-        eprintln!("Parsing aborted.");
-    }
+    // Parser
+    let mut parser = Parser::new(
+        tokens,
+        &mut compiler,
+    );
 
     let mut ast = AST::new();
-
-    let parser = Parser::new(
-        tokens.clone(),
-        diagnostics_bag.clone(),
-        types.clone(),
-    );
-
-    if !abort::is_aborted() {
-        loop {
-            let s = parser.next_stmt();
-            if !s.is_none() {
-                ast.add_stmt(s.unwrap());
-            } else {
-                break; // Stop parsing when no more statements are available
-            }
-        }
-
-        ast.visualize();
+    while let Some(stmt) = parser.next_stmt() {
+        ast.add_stmt(stmt);
     }
 
-    let mut tc = TypeChecker::new(
-        diagnostics_bag.clone(),
-        types,
-        trait_ctx,
-    );
+    ast.visualize();
 
-    tc.check(&ast);
+    // TypeChecker
+    let tc = TypeChecker::new();
+    tc.check(&mut compiler, &ast);
+
+    let printer = Printer::new(&source, &mut compiler.diagnostics);
 
     println!("{}", printer.stringify());
 }

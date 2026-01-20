@@ -1,20 +1,20 @@
-use super::token::{Keyword, Span, Token, TokenKind};
-use crate::diagnostics::{DiagnosticBagCell, DiagnosticBuilder, DiagnosticKind};
-use crate::file;
+use super::token::{ Keyword, Span, Token, TokenKind };
+use crate::diagnostics::{ DiagnosticBuilder, DiagnosticKind };
+use crate::{file, Compiler};
 
 #[derive(Clone)]
-pub struct Lexer {
+pub struct Lexer<'a> {
     input: Vec<u8>,
     position: usize,
-    diagnostics_bag: DiagnosticBagCell,
+    compiler: &'a Compiler,
 }
 
-impl Lexer {
-    pub fn new(diagnostics_bag: DiagnosticBagCell) -> Self {
+impl<'a> Lexer<'a> {
+    pub fn new(compiler: &'a Compiler) -> Self {
         Self {
             input: file::content(),
             position: 0,
-            diagnostics_bag,
+            compiler
         }
     }
 
@@ -127,7 +127,7 @@ impl Lexer {
             Some(b'!') => match self.peek(1) {
                 Some(b'!') => {
                     let span = Span::new(self.position, self.position + 2);
-                    self.diagnostics_bag.push(
+                    self.compiler.diagnostics.push(
                         DiagnosticBuilder::error(DiagnosticKind::UnknownCharacter, span.clone())
                             .label(span.clone(), "Double exclamation mark is not allowed!")
                             .note("Did you mean to use a single exclamation mark? Or wrap the inner expression in parentheses.")
@@ -155,7 +155,7 @@ impl Lexer {
 
             Some(_) => {
                 let span = Span::new(self.position, self.position + 1);
-                self.diagnostics_bag.push(
+                self.compiler.diagnostics.push(
                     DiagnosticBuilder::error(DiagnosticKind::UnknownCharacter, span.clone())
                         .label(span.clone(), "Unknown character!")
                         .build(),
@@ -188,7 +188,7 @@ impl Lexer {
         if let Some(c) = self.peek(0) {
             if !(c as char).is_ascii_alphabetic() && c != b'_' {
                 let span = Span::new(self.position, self.position + 1);
-                self.diagnostics_bag.push(
+                self.compiler.diagnostics.push(
                     DiagnosticBuilder::error(DiagnosticKind::InvalidCharacter, span.clone())
                         .label(span, "Identifier must start with a letter or underscore")
                         .build(),
@@ -254,7 +254,7 @@ impl Lexer {
             .iter()
             .map(|&b| b as char)
             .collect();
-        let value = u64::from_str_radix(&raw, 16).unwrap();
+        let value = u128::from_str_radix(&raw, 16).unwrap();
         (TokenKind::Integer(value), i)
     }
 
@@ -288,7 +288,7 @@ impl Lexer {
                 Ok(v) => (TokenKind::Float(v), i),
                 Err(_) => {
                     let span = Span::new(start, start + i);
-                    self.diagnostics_bag.push(
+                    self.compiler.diagnostics.push(
                         DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                             .label(span, "Invalid floating-point literal!")
                             .build(),
@@ -297,11 +297,11 @@ impl Lexer {
                 }
             }
         } else {
-            match text.parse::<u64>() {
+            match text.parse::<u128>() {
                 Ok(v) => (TokenKind::Integer(v), i),
                 Err(_) => {
                     let span = Span::new(start, start + i);
-                    self.diagnostics_bag.push(
+                    self.compiler.diagnostics.push(
                         DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                             .label(span, "Invalid integer literal!")
                             .build(),
@@ -330,7 +330,7 @@ impl Lexer {
                     None => {
                         // EOF nach \
                         let span = Span::new(start, start + i);
-                        self.diagnostics_bag.push(
+                        self.compiler.diagnostics.push(
                             DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                                 .label(
                                     span.clone(),
@@ -346,7 +346,7 @@ impl Lexer {
             None => {
                 // EOF direkt nach '
                 let span = Span::new(start, start + i);
-                self.diagnostics_bag.push(
+                self.compiler.diagnostics.push(
                     DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                         .label(span.clone(), "unterminated char literal")
                         .build(),
@@ -363,7 +363,7 @@ impl Lexer {
             (TokenKind::Char(c), i)
         } else {
             let span = Span::new(start, start + i);
-            self.diagnostics_bag.push(
+            self.compiler.diagnostics.push(
                 DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                     .label(span.clone(), "unterminated char literal")
                     .build(),
@@ -404,7 +404,7 @@ impl Lexer {
         }
 
         let span = Span::new(start, start + i);
-        self.diagnostics_bag.push(
+        self.compiler.diagnostics.push(
             DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                 .label(span, "invalid byte char literal")
                 .build(),
@@ -452,7 +452,7 @@ impl Lexer {
         }
 
         let span = Span::new(start, start + i);
-        self.diagnostics_bag.push(
+        self.compiler.diagnostics.push(
             DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                 .label(span, "unterminated string literal")
                 .build(),
@@ -486,7 +486,7 @@ impl Lexer {
         }
 
         let span = Span::new(start, start + i);
-        self.diagnostics_bag.push(
+        self.compiler.diagnostics.push(
             DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                 .label(span, "unterminated raw string literal")
                 .build(),
@@ -534,7 +534,7 @@ impl Lexer {
         }
 
         let span = Span::new(start, start + i);
-        self.diagnostics_bag.push(
+        self.compiler.diagnostics.push(
             DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                 .label(span, "unterminated byte string literal")
                 .build(),
@@ -558,7 +558,7 @@ impl Lexer {
         }
 
         let span = Span::new(start, start + i);
-        self.diagnostics_bag.push(
+        self.compiler.diagnostics.push(
             DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
                 .label(span, "unterminated raw byte string literal")
                 .build(),

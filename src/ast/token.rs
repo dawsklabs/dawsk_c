@@ -1,4 +1,4 @@
-use super::types::TypeId;
+use super::types::Ty;
 use std::fmt::{Display, Formatter, Result};
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -29,9 +29,9 @@ pub enum TokenKind {
     Keyword(Keyword),
 
     // Types
-    Type(TypeId),
+    Type(Ty),
     Identifier(&'static str),
-    Integer(u64),
+    Integer(u128),
     Float(f64),
     Byte(u8),
     Char(char),
@@ -100,7 +100,7 @@ pub enum TokenKind {
 impl Display for TokenKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
-            TokenKind::Type(t) => write!(f, "Type ({})", t),
+            TokenKind::Type(t) => write!(f, "Type ({:?})", t),
             TokenKind::Integer(_) => write!(f, "Int"),
             TokenKind::Float(_) => write!(f, "Float"),
             TokenKind::String(_) => write!(f, "String"),

@@ -2,10 +2,9 @@ pub mod printer;
 
 use std::cell::{Ref, RefCell};
 use std::fmt::{Display, Formatter, Result};
-use std::rc::Rc;
 
 use crate::ast::token::{Span, TokenKind};
-use crate::ast::types::{Ty, TyVarId};
+use crate::ast::types::Ty;
 use crate::ast::{ASTBinaryOperatorKind, ASTExprKind, ASTUnaryOperatorKind};
 use crate::color::Color;
 
@@ -179,8 +178,6 @@ impl DiagnosticBag {
     // }
 }
 
-pub type DiagnosticBagCell = Rc<DiagnosticBag>;
-
 //
 // ========================
 // Diagnostic Level
@@ -235,12 +232,12 @@ pub enum DiagnosticKind {
     ExpectedExpression,
     MissingSemicolon,
     TypeMismatch {
-        given: TypeId,
-        expected: TypeId,
+        given: Ty,
+        expected: Ty,
     },
-    UnresolvedTypeVariable {
-        id: TyVarId,
-    },
+    // UnresolvedTypeVariable {
+    //     id: TyVarId,
+    // },
     UnknownIdentifier {
         identifier: String,
     },
@@ -268,6 +265,10 @@ pub enum DiagnosticKind {
         to: Ty,
     },
     OutOfBound,
+    TypeOverflow {
+        value: Literal,
+        ty: Ty,
+    },
     UnexpectedWhitespace,
 }
 
@@ -291,13 +292,13 @@ impl Display for DiagnosticKind {
             DiagnosticKind::TypeMismatch { given, expected } => {
                 write!(
                     f,
-                    "type mismatch: expected '{}', found '{}'",
+                    "type mismatch: expected '{:?}', found '{:?}'",
                     expected, given
                 )
             }
-            DiagnosticKind::UnresolvedTypeVariable { id } => {
-                write!(f, "unresolved type variable '{}'", id)
-            }
+            // DiagnosticKind::UnresolvedTypeVariable { id } => {
+            //     write!(f, "unresolved type variable '{}'", id)
+            // }
             DiagnosticKind::UnknownIdentifier { identifier } => {
                 write!(f, "unknown identifier '{}'", identifier)
             }
@@ -306,11 +307,11 @@ impl Display for DiagnosticKind {
             DiagnosticKind::InvalidValue => write!(f, "invalid value"),
             DiagnosticKind::InvalidGenericBase => write!(f, "invalid generic base"),
             DiagnosticKind::InvalidUnaryOperator { op, ty } => {
-                write!(f, "operator '{:?}' cannot be applied to type '{}'", op, ty)
+                write!(f, "operator '{}' cannot be applied to type '{:?}'", op, ty)
             }
             DiagnosticKind::InvalidBinaryOperator { op, left, right } => write!(
                 f,
-                "operator '{:?}' cannot be applied to types '{}' and '{}'",
+                "operator '{:?}' cannot be applied to types '{:?}' and '{:?}'",
                 op, left, right
             ),
             DiagnosticKind::AlreadyDefined { name } => {
@@ -320,9 +321,10 @@ impl Display for DiagnosticKind {
             DiagnosticKind::ImmutableVariable => write!(f, "immutable variable"),
             DiagnosticKind::InvalidAssignmentTarget => write!(f, "invalid target for assignment"),
             DiagnosticKind::InvalidCast { from, to } => {
-                write!(f, "invalid cast from '{}' to '{}'", from, to)
+                write!(f, "invalid cast from '{:?}' to '{:?}'", from, to)
             }
             DiagnosticKind::OutOfBound => write!(f, "index out of bounds"),
+            DiagnosticKind::TypeOverflow { value, ty } => write!(f, "type overflow: value `{:?}` does not fit type `{:?}`", *value, *ty),
             DiagnosticKind::UnexpectedWhitespace => {
                 write!(f, "unexpected whitespace")
             }
@@ -342,4 +344,11 @@ impl DiagnosticKind {
             }
         }
     }
+}
+
+#[derive(Debug)]
+pub enum Literal {
+    Int(i128),
+    UInt(u128),
+    Float(f64),
 }

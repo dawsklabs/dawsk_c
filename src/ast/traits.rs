@@ -1,223 +1,108 @@
 use std::collections::HashMap;
+use smallvec::{SmallVec, smallvec};
 
-use crate::ast::types::{LiteralType, TypeCtx, TypeId, TypeKind};
+use crate::ast::types::{InferCtx, InferTy, Primitive, Ty, TyInterner, TyKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TraitKind {
-    Add,       // +, +=
-    Sub,       // -, -=
-    Mul,       // *, *=
-    Div,       // /, /=
-    Rem,       // %, &=
-    Not,       // !
-    Neg,       // -
-    BitAnd,    // &
-    Eq,        // ==
-    PartialEq, // ==, !=
-    Cast,      // .. as ..
+    Add, Sub, Mul, Div, Rem,
+    Not, Neg, BitAnd,
+    Eq, PartialEq,
+    Cast,
     Custom(u32),
 }
 
 #[derive(Debug, Clone)]
 pub struct TraitImpl {
     pub trait_kind: TraitKind,
-    pub params: Vec<TypeId>,
-    pub output: TypeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct TraitImplKind {
-    pub trait_kind: TraitKind,
-    pub params: Vec<TypeKind>,
-    pub output: TypeKind,
+    pub params: SmallVec<[Ty; 2]>,
+    pub output: Ty,
 }
 
 pub struct TraitCtx {
-    pub impls: HashMap<TypeId, Vec<TraitImpl>>,
+    pub impls: HashMap<Ty, Vec<TraitImpl>>,
 }
 
-impl TraitCtx {
-    pub fn new(types: &TypeCtx) -> Self {
-        let mut ctx = Self {
+impl<'a> TraitCtx {
+    pub fn new() -> Self {
+        Self {
             impls: HashMap::new(),
+        }
+    }
+
+    pub fn add_impl(&mut self, output: Ty, tr: TraitKind, params: SmallVec<[Ty; 2]>) {
+        self.impls
+            .entry(output)
+            .or_default()
+            .push(TraitImpl {
+                trait_kind: tr,
+                params,
+                output,
+            });
+    }
+
+    pub fn implements(&self, ty: Ty, tr: TraitKind, params: &[Ty]) -> Option<Ty> {
+        self.impls
+            .get(&ty)?
+            .iter()
+            .find_map(|impl_| {
+                (impl_.trait_kind == tr && impl_.params.as_slice() == params)
+                    .then_some(impl_.output)
+            }
+        )
+    }
+
+    pub fn implements_infer(
+        &self,
+        infer_ctx: &mut InferCtx,
+        ty_interner: &mut TyInterner,
+        ty: InferTy,
+        tr: TraitKind,
+        params: &[InferTy],
+    ) -> Option<Ty> {
+        let ty = infer_ctx.resolve_to_ty(ty_interner, ty); // converts to concrete Ty
+        let params: Vec<Ty> = params.iter()
+            .map(|p| infer_ctx.resolve_to_ty(ty_interner, p.clone()))
+            .collect();
+
+        self.implements(ty, tr, &params)
+    }
+
+    pub fn gen_default_traits(&mut self, ty_interner: &mut TyInterner) {
+        use Primitive::*;
+
+        let (
+            bool_t,
+            int_prims,
+            uint_prims,
+        ) = {
+            (
+                ty_interner.intern(TyKind::Primitive(Bool)),
+                [I8, I16, I32, I64],
+                [U8, U16, U32, U64],
+            )
         };
 
-        ctx.gen_default_traits(types); // types weitergeben
-        ctx
-    }
+        for &p in int_prims.iter().chain(uint_prims.iter()) {
+            let prim_t = {
+                ty_interner.intern(TyKind::Primitive(p))
+            };
 
-    pub fn add_impl(
-        &mut self,
-        types: &TypeCtx,
-        ty: TypeKind,
-        tr: TraitImplKind, // TraitImplKind statt TraitImpl
-    ) {
-        let ty_id = types.intern(ty);
-
-        let tr = TraitImpl {
-            trait_kind: tr.trait_kind,
-            params: tr.params.into_iter().map(|p| types.intern(p)).collect(),
-            output: ty_id,
-        };
-
-        self.impls.entry(ty_id).or_default().push(tr);
-    }
-
-    pub fn implements(&self, ty: TypeId, tr: TraitKind, params: &[TypeId]) -> Option<TypeId> {
-        self.impls.get(&ty)?.iter().find_map(|impl_| {
-            (impl_.trait_kind == tr && impl_.params == params).then_some(impl_.output)
-        })
-    }
-
-    pub fn gen_default_traits(&mut self, types: &TypeCtx) {
-        use crate::ast::types::Primitive::*;
-
-        // basic types
-        self.add_impl(
-            types,
-            TypeKind::Literal(LiteralType::UInt),
-            TraitImplKind {
-                trait_kind: TraitKind::Add,
-                params: vec![TypeKind::Literal(LiteralType::UInt)],
-                output: TypeKind::Literal(LiteralType::UInt),
-            },
-        );
-
-        for ty in &[I8, I16, I32, I64, U8, U16, U32, U64] {
-            for op in &[TraitKind::Add, TraitKind::Sub, TraitKind::Mul] {
-                self.add_impl(
-                    types,
-                    TypeKind::Primitive(*ty),
-                    TraitImplKind {
-                        trait_kind: *op,
-                        params: vec![TypeKind::Literal(LiteralType::Int)],
-                        output: TypeKind::Primitive(*ty),
-                    },
-                );
-
-                self.add_impl(
-                    types,
-                    TypeKind::Literal(LiteralType::Int),
-                    TraitImplKind {
-                        trait_kind: *op,
-                        params: vec![TypeKind::Primitive(*ty)],
-                        output: TypeKind::Primitive(*ty),
-                    },
-                );
-
-                self.add_impl(
-                    types,
-                    TypeKind::Primitive(*ty),
-                    TraitImplKind {
-                        trait_kind: *op,
-                        params: vec![TypeKind::Primitive(*ty)],
-                        output: TypeKind::Primitive(*ty),
-                    },
-                );
+            for &op in &[TraitKind::Add, TraitKind::Sub, TraitKind::Mul] {
+                self.add_impl(prim_t, op, smallvec![prim_t]);
             }
         }
 
-        for op in &[TraitKind::Add, TraitKind::Sub, TraitKind::Mul] {
-            self.add_impl(
-                types,
-                TypeKind::Literal(LiteralType::Int),
-                TraitImplKind {
-                    trait_kind: *op,
-                    params: vec![TypeKind::Literal(LiteralType::Int)],
-                    output: TypeKind::Literal(LiteralType::Int),
-                },
-            );
+        for &p in &[F32, F64] {
+            let prim_t = {
+                ty_interner.intern(TyKind::Primitive(p))
+            };
 
-            self.add_impl(
-                types,
-                TypeKind::Literal(LiteralType::UInt),
-                TraitImplKind {
-                    trait_kind: *op,
-                    params: vec![TypeKind::Literal(LiteralType::Int)],
-                    output: TypeKind::Literal(LiteralType::Int),
-                },
-            );
-            self.add_impl(
-                types,
-                TypeKind::Literal(LiteralType::Int),
-                TraitImplKind {
-                    trait_kind: *op,
-                    params: vec![TypeKind::Literal(LiteralType::UInt)],
-                    output: TypeKind::Literal(LiteralType::Int),
-                },
-            );
-        }
-
-        for ty in &[F32, F64] {
-            for op in &[
-                TraitKind::Add,
-                TraitKind::Sub,
-                TraitKind::Mul,
-                TraitKind::Div,
-            ] {
-                self.add_impl(
-                    types,
-                    TypeKind::Primitive(*ty),
-                    TraitImplKind {
-                        trait_kind: *op,
-                        params: vec![TypeKind::Literal(LiteralType::Float)],
-                        output: TypeKind::Primitive(*ty),
-                    },
-                );
-
-                self.add_impl(
-                    types,
-                    TypeKind::Literal(LiteralType::Float),
-                    TraitImplKind {
-                        trait_kind: *op,
-                        params: vec![TypeKind::Primitive(*ty)],
-                        output: TypeKind::Primitive(*ty),
-                    },
-                );
-
-                self.add_impl(
-                    types,
-                    TypeKind::Primitive(*ty),
-                    TraitImplKind {
-                        trait_kind: *op,
-                        params: vec![TypeKind::Primitive(*ty)],
-                        output: TypeKind::Primitive(*ty),
-                    },
-                );
+            for &op in &[TraitKind::Add, TraitKind::Sub, TraitKind::Mul, TraitKind::Div] {
+                self.add_impl(prim_t, op, smallvec![prim_t]);
             }
         }
 
-        self.add_impl(
-            types,
-            TypeKind::Primitive(Bool),
-            TraitImplKind {
-                trait_kind: TraitKind::Not,
-                params: vec![],
-                output: TypeKind::Primitive(Bool),
-            },
-        );
-
-        self.add_impl(
-            types,
-            TypeKind::Literal(LiteralType::UInt),
-            TraitImplKind {
-                trait_kind: TraitKind::Neg,
-                params: vec![],
-                output: TypeKind::Literal(LiteralType::Int),
-            },
-        );
-
-        self.add_impl(
-            types,
-            TypeKind::Literal(LiteralType::Int),
-            TraitImplKind {
-                trait_kind: TraitKind::Neg,
-                params: vec![],
-                output: TypeKind::Literal(LiteralType::Int),
-            },
-        );
-
-        // println!("Trait implementations added successfully!");
-        // println!("{:#?}", self.impls);
+        self.add_impl(bool_t, TraitKind::Not, smallvec![]);
     }
 }

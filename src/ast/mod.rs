@@ -11,8 +11,9 @@ use std::fmt::{Display, Formatter, Result};
 use crate::color::{
     Color, BLUE_COLOR, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, SUBTEXT_COLOR,
 };
+use smallvec::SmallVec;
 use token::{Span, Token, TokenKind};
-use types::TyId;
+use types::Ty;
 
 pub struct AST {
     pub stmts: Vec<ASTStmt>,
@@ -182,10 +183,10 @@ impl ASTVisitor for ASTPrinter {
         self.print_indent(&format!("{}Cast{}:", SUBTEXT_COLOR, Color::ResetAll));
         self.indent += INDENT_SIZE;
         self.print_indent(&format!(
-            "{}Type{}: {}",
+            "{}Type{}: {:?}",
             SUBTEXT_COLOR,
             Color::ResetAll,
-            expr.target.to_string()
+            expr.target
         ));
         self.visit_expr(&expr.expr);
         self.indent -= INDENT_SIZE;
@@ -232,10 +233,10 @@ impl ASTVisitor for ASTPrinter {
                 Color::ResetAll
             ));
             self.print_indent_sub(&format!(
-                "{}Type{}: {}",
+                "{}Type{}: {:?}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
-                dec.type_.clone().unwrap_or(0)
+                dec.type_.clone().unwrap_or(Ty(0))
             ));
             self.visit_expr(&dec.initializer);
             self.indent -= INDENT_SIZE;
@@ -275,7 +276,7 @@ impl ASTVisitor for ASTPrinter {
                     self.print_indent(&format!("{}Generics{}:", SUBTEXT_COLOR, Color::ResetAll));
                     self.indent += INDENT_SIZE;
                     for generic in generics.iter() {
-                        self.print_indent_sub(&format!("{}", generic));
+                        self.print_indent_sub(&format!("{:?}", generic));
                     }
                     self.indent -= INDENT_SIZE;
                 }
@@ -306,7 +307,7 @@ impl ASTVisitor for ASTPrinter {
                         Color::ResetAll
                     ));
                     self.print_indent_sub(&format!(
-                        "{}Type{}: {}{}{}",
+                        "{}Type{}: {}{:?}{}",
                         SUBTEXT_COLOR,
                         Color::ResetAll,
                         LAVENDAR_COLOR,
@@ -352,7 +353,7 @@ impl ASTVisitor for ASTPrinter {
                     self.print_indent(&format!("{}Generics{}:", SUBTEXT_COLOR, Color::ResetAll));
                     self.indent += INDENT_SIZE;
                     for generic in generics.iter() {
-                        self.print_indent_sub(&format!("{}", generic));
+                        self.print_indent_sub(&format!("{:?}", generic));
                     }
                     self.indent -= INDENT_SIZE;
                 }
@@ -361,7 +362,7 @@ impl ASTVisitor for ASTPrinter {
             self.print_indent(&format!("{}Fields{}:", SUBTEXT_COLOR, Color::ResetAll));
             self.indent += INDENT_SIZE;
             for field in dec.fields.iter() {
-                self.print_indent_sub(&format!("{}", field));
+                self.print_indent_sub(&format!("{:?}", field));
             }
             self.indent -= INDENT_SIZE * 2;
         }
@@ -407,7 +408,7 @@ impl ASTVisitor for ASTPrinter {
     fn visit_valued(&self, kind: &ASTExprKind) {
         match kind {
             ASTExprKind::Integer(v) => self.print_indent_sub(&format!(
-                "{}Unsigned Integer{}({}{}{})",
+                "{}Integer{}({}{}{})",
                 BLUE_COLOR,
                 Color::ResetAll,
                 PEACH_COLOR,
@@ -558,7 +559,7 @@ impl ASTStmt {
         identifier: Token,
         public: bool,
         mutable: bool,
-        type_: Option<TypeId>,
+        type_: Option<Ty>,
         initializer: ASTExpr,
     ) -> Self {
         Self::new(ASTStmtKind::VarDec(ASTVarDecExpr::new(
@@ -573,7 +574,7 @@ impl ASTStmt {
     pub fn struct_dec(
         identifier: Token,
         public: bool,
-        generics: Option<Vec<TypeId>>,
+        generics: Option<SmallVec<[Ty; 2]>>,
         fields: Vec<ASTStructField>,
     ) -> Self {
         Self::new(ASTStmtKind::StructDec(ASTStructDecExpr::new(
@@ -584,8 +585,8 @@ impl ASTStmt {
     pub fn tuple_struct_dec(
         identifier: Token,
         public: bool,
-        generics: Option<Vec<TypeId>>,
-        fields: Vec<TypeId>,
+        generics: Option<SmallVec<[Ty; 2]>>,
+        fields: SmallVec<[Ty; 4]>,
     ) -> Self {
         Self::new(ASTStmtKind::TupleStructDec(ASTTupleStructDecExpr::new(
             identifier, public, generics, fields,
@@ -595,7 +596,7 @@ impl ASTStmt {
 
 #[derive(Debug, Clone)]
 pub enum ASTExprKind {
-    Integer(u64),
+    Integer(u128),
     Float(f64),
     Byte(u8),            // b''
     Char(char),          // ''
@@ -645,7 +646,7 @@ impl ASTExpr {
         Self { kind, span }
     }
 
-    pub fn int(value: u64, span: Span) -> Self {
+    pub fn int(value: u128, span: Span) -> Self {
         Self::new(ASTExprKind::Integer(value), span)
     }
 
@@ -684,7 +685,7 @@ impl ASTExpr {
         Self::new(ASTExprKind::Parenthesized(ASTParenExpr::new(expr)), span)
     }
 
-    pub fn cast(expr: ASTExpr, target: TypeId, span: Span) -> Self {
+    pub fn cast(expr: ASTExpr, target: Ty, span: Span) -> Self {
         Self::new(ASTExprKind::Cast(ASTCastExpr::new(expr, target)), span)
     }
 
@@ -868,7 +869,7 @@ pub struct ASTVarDecExpr {
     identifier: Token,
     pub_: bool,
     mut_: bool,
-    type_: Option<TypeId>,
+    type_: Option<Ty>,
     initializer: ASTExpr,
 }
 
@@ -877,7 +878,7 @@ impl ASTVarDecExpr {
         identifier: Token,
         pub_: bool,
         mut_: bool,
-        type_: Option<TypeId>,
+        type_: Option<Ty>,
         initializer: ASTExpr,
     ) -> Self {
         Self {
@@ -894,7 +895,7 @@ impl ASTVarDecExpr {
 pub struct ASTStructDecExpr {
     identifier: Token,
     pub_: bool,
-    generics: Option<Vec<TypeId>>,
+    generics: Option<SmallVec<[Ty; 2]>>,
     fields: Vec<ASTStructField>,
 }
 
@@ -902,7 +903,7 @@ impl ASTStructDecExpr {
     pub fn new(
         identifier: Token,
         pub_: bool,
-        generics: Option<Vec<TypeId>>,
+        generics: Option<SmallVec<[Ty; 2]>>,
         fields: Vec<ASTStructField>,
     ) -> Self {
         Self {
@@ -919,23 +920,23 @@ pub struct ASTStructField {
     // identifier ist optional: bei Tuple Struct None
     identifier: Token,
     pub_: bool,
-    type_: TypeId,
+    type_: Ty,
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTTupleStructDecExpr {
     identifier: Token,
     pub_: bool,
-    generics: Option<Vec<TypeId>>,
-    fields: Vec<TypeId>,
+    generics: Option<SmallVec<[Ty; 2]>>,
+    fields: SmallVec<[Ty; 4]>,
 }
 
 impl ASTTupleStructDecExpr {
     pub fn new(
         identifier: Token,
         pub_: bool,
-        generics: Option<Vec<TypeId>>,
-        fields: Vec<TypeId>,
+        generics: Option<SmallVec<[Ty; 2]>>,
+        fields: SmallVec<[Ty; 4]>,
     ) -> Self {
         Self {
             identifier,
@@ -966,11 +967,11 @@ impl ASTAssignmentExpr {
 #[derive(Debug, Clone)]
 pub struct ASTCastExpr {
     pub expr: Box<ASTExpr>,
-    pub target: TypeId,
+    pub target: Ty,
 }
 
 impl ASTCastExpr {
-    pub fn new(expr: ASTExpr, target: TypeId) -> Self {
+    pub fn new(expr: ASTExpr, target: Ty) -> Self {
         Self {
             expr: Box::new(expr),
             target,

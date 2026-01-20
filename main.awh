@@ -1,8 +1,4 @@
-dec mut a: i8 = 15;
+dec mut a: u8 = 153543;
 a += 5;
 
-dec b: u8 = {
-    dec a = 20;
-    a + 5;
-    a
-};
+dec b: f32 = 15.0 + 1;

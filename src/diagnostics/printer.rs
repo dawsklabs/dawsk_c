@@ -1,14 +1,14 @@
 use crate::color::Color;
-use crate::diagnostics::{DiagnosticBagCell, DiagnosticSegment};
+use crate::diagnostics::{DiagnosticBag, DiagnosticSegment};
 use crate::text::{file, Source};
 
 pub struct Printer<'a> {
     source: &'a Source,
-    diagnostics: DiagnosticBagCell,
+    diagnostics: &'a mut DiagnosticBag,
 }
 
 impl<'a> Printer<'a> {
-    pub fn new(source: &'a Source, diagnostics: DiagnosticBagCell) -> Self {
+    pub fn new(source: &'a Source, diagnostics: &'a mut DiagnosticBag) -> Self {
         Self {
             source,
             diagnostics,

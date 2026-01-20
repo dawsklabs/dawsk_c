@@ -10,15 +10,15 @@ impl Source {
     }
 
     // get the line start
-    pub fn line_start(&self, pos: usize) -> usize {
-        let bytes = &self.text;
-        let end = pos.min(bytes.len());
+    // pub fn line_start(&self, pos: usize) -> usize {
+    //     let bytes = &self.text;
+    //     let end = pos.min(bytes.len());
 
-        match memchr::memrchr(b'\n', &bytes[..end]) {
-            Some(i) => i + 1,
-            None => 0,
-        }
-    }
+    //     match memchr::memrchr(b'\n', &bytes[..end]) {
+    //         Some(i) => i + 1,
+    //         None => 0,
+    //     }
+    // }
 
     // gives back the line and column number at the position
     pub fn line_col(&self, pos: usize) -> (usize, usize) {
@@ -38,9 +38,9 @@ impl Source {
     }
 
     // gives back the line number at the position
-    pub fn line(&self, pos: usize) -> usize {
-        self.line_col(pos).0
-    }
+    // pub fn line(&self, pos: usize) -> usize {
+    //     self.line_col(pos).0
+    // }
 
     // gives back the column number at the position
     pub fn col(&self, pos: usize) -> usize {

@@ -1,7 +1,8 @@
-use super::token::Span;
-use super::types::TypeId;
+use crate::Compiler;
 
-use std::cell::{ Cell, RefCell };
+use super::token::Span;
+use super::types::Ty;
+
 use std::collections::HashMap;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -10,19 +11,75 @@ pub struct ScopeId(pub u32);
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct SymbolId(pub u32);
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct NameId(pub u32);
+
+// ---------- Name Interner (std::HashMap) ----------
+pub struct NameInterner {
+    map: HashMap<String, NameId>,
+    arena: Vec<String>,
+}
+
+impl NameInterner {
+    pub fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            arena: Vec::new(),
+        }
+    }
+
+    pub fn intern(&mut self, s: &str) -> NameId {
+        if let Some(&id) = self.map.get(s) {
+            return id;
+        }
+
+        let id = NameId(self.arena.len() as u32);
+        let owned = s.to_string();
+        self.arena.push(owned.clone());
+        self.map.insert(owned, id);
+        id
+    }
+
+    pub fn get(&self, id: NameId) -> &str {
+        &self.arena[id.0 as usize]
+    }
+}
+
+// ---------- Symbol ----------
 #[derive(Debug, Clone)]
 pub struct Symbol {
-    pub name: &'static str,
-    pub type_: TypeId,
+    pub name: NameId,
+    pub type_: Ty,
     pub mut_: bool,
     pub pub_: bool,
     pub span: Span,
 }
 
-#[derive(Debug)]
+// ---------- Symbol Arena ----------
+pub struct SymbolArena {
+    symbols: Vec<Symbol>,
+}
+
+impl SymbolArena {
+    pub fn new() -> Self {
+        Self { symbols: Vec::new() }
+    }
+
+    pub fn alloc(&mut self, sym: Symbol) -> SymbolId {
+        let id = SymbolId(self.symbols.len() as u32);
+        self.symbols.push(sym);
+        id
+    }
+
+    pub fn get(&self, id: SymbolId) -> &Symbol {
+        &self.symbols[id.0 as usize]
+    }
+}
+
+// ---------- Scope ----------
 pub struct Scope {
     pub parent: Option<ScopeId>,
-    pub symbols: HashMap<&'static str, SymbolId>,
+    pub symbols: HashMap<NameId, SymbolId>,
 }
 
 impl Scope {
@@ -58,30 +115,11 @@ impl ScopeArena {
     }
 }
 
-pub struct SymbolArena {
-    symbols: Vec<Symbol>,
-}
-
-impl SymbolArena {
-    pub fn new() -> Self {
-        Self { symbols: Vec::new() }
-    }
-
-    pub fn alloc(&mut self, sym: Symbol) -> SymbolId {
-        let id = SymbolId(self.symbols.len() as u32);
-        self.symbols.push(sym);
-        id
-    }
-
-    pub fn get(&self, id: SymbolId) -> &Symbol {
-        &self.symbols[id.0 as usize]
-    }
-}
-
+// ---------- Scope Context ----------
 pub struct ScopeCtx {
-    scopes: RefCell<ScopeArena>,
-    symbols: RefCell<SymbolArena>,
-    current: Cell<ScopeId>,
+    scopes: ScopeArena,
+    symbols: SymbolArena,
+    current: ScopeId,
 }
 
 impl ScopeCtx {
@@ -90,49 +128,45 @@ impl ScopeCtx {
         let root = scopes.alloc(None);
 
         Self {
-            scopes: RefCell::new(scopes),
-            symbols: RefCell::new(SymbolArena::new()),
-            current: Cell::new(root),
+            scopes,
+            symbols: SymbolArena::new(),
+            current: root
         }
     }
 
-    pub fn push(&self) {
-        let parent = self.current.get();
-        let new_scope = self.scopes.borrow_mut().alloc(Some(parent));
-        self.current.set(new_scope);
+    pub fn push(&mut self) {
+        let parent = self.current;
+        let new_scope = self.scopes.alloc(Some(parent));
+        self.current = new_scope;
     }
 
-    pub fn pop(&self) {
-        let scopes = self.scopes.borrow();
-        if let Some(parent) = scopes.get(self.current.get()).parent {
-            self.current.set(parent);
+    pub fn pop(&mut self) {
+        if let Some(parent) = self.scopes.get(self.current).parent {
+            self.current = parent;
         }
     }
 
-    pub fn define(&self, sym: Symbol) -> Result<SymbolId, ()> {
-        let mut symbols = self.symbols.borrow_mut();
-        let sym_id = symbols.alloc(sym);
+    pub fn define(&mut self, mut sym: Symbol) -> Result<SymbolId, ()> {
+        // name internieren (nur wenn sym.name ein String wäre)
+        let name_id = sym.name;
 
-        let mut scopes = self.scopes.borrow_mut();
-        let scope = scopes.get_mut(self.current.get());
+        sym.name = name_id;
+        let sym_id = self.symbols.alloc(sym);
 
-        let name = symbols.get(sym_id).name;
-
-        if scope.symbols.contains_key(name) {
+        if self.scopes.get(self.current).symbols.contains_key(&name_id) {
             return Err(());
         }
 
-        scope.symbols.insert(name, sym_id);
+        self.scopes.get_mut(self.current).symbols.insert(name_id, sym_id);
         Ok(sym_id)
     }
 
-    pub fn lookup(&self, name: &str) -> Option<SymbolId> {
-        let scopes = self.scopes.borrow();
-        let mut cur = Some(self.current.get());
+    pub fn lookup(&self, name: NameId) -> Option<SymbolId> {
+        let mut cur = Some(self.current);
 
         while let Some(id) = cur {
-            let scope = scopes.get(id);
-            if let Some(&sym) = scope.symbols.get(name) {
+            let scope = self.scopes.get(id);
+            if let Some(&sym) = scope.symbols.get(&name) {
                 return Some(sym);
             }
             cur = scope.parent;
@@ -140,18 +174,19 @@ impl ScopeCtx {
         None
     }
 
-    pub fn lookup_current(&self, name: &str) -> Option<SymbolId> {
-        let scopes = self.scopes.borrow();
-        let scope = scopes.get(self.current.get());
-        scope.symbols.get(name).copied()
+    pub fn lookup_current(&self, name: NameId) -> Option<SymbolId> {
+        self.scopes
+            .get(self.current)
+            .symbols
+            .get(&name)
+            .copied()
     }
 
     pub fn with_symbol<R>(&self, id: SymbolId, f: impl FnOnce(&Symbol) -> R) -> R {
-        let symbols = self.symbols.borrow();
-        f(symbols.get(id))
+        f(self.symbols.get(id))
     }
 
-    pub fn symbol_type(&self, id: SymbolId) -> TypeId {
+    pub fn symbol_type(&self, id: SymbolId) -> Ty {
         self.with_symbol(id, |s| s.type_)
     }
 
