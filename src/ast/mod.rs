@@ -4,59 +4,86 @@ pub mod scope;
 pub mod token;
 pub mod traits;
 pub mod typechecker;
-pub mod types;
 
 use std::fmt::{Display, Formatter, Result};
+use std::io::{self, Write};
 
 use crate::color::{
     Color, BLUE_COLOR, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, SUBTEXT_COLOR,
 };
-use smallvec::SmallVec;
-use token::{Span, Token, TokenKind};
-use types::Ty;
+use crate::source::Span;
+use crate::types::Ty;
+use token::{Token, TokenKind};
 
 pub struct AST {
-    pub stmts: Vec<ASTStmt>,
+    pub items: Vec<ASTItem>,
 }
 
 impl AST {
     pub fn new() -> Self {
-        Self { stmts: Vec::new() }
+        Self { items: Vec::new() }
     }
 
-    pub fn add_stmt(&mut self, stmt: ASTStmt) {
-        self.stmts.push(stmt);
+    pub fn add_item(&mut self, item: ASTItem) {
+        self.items.push(item);
     }
 
-    pub fn visit(&self, visitor: &mut dyn ASTVisitor) {
-        for stmt in &self.stmts {
-            visitor.visit_stmt(stmt);
+    pub fn visit(&self, visitor: &mut dyn ASTVisitor) -> io::Result<()> {
+        for item in &self.items {
+            match item {
+                ASTItem::Stmt(stmt) => visitor.visit_stmt(stmt)?,
+                _ => todo!(),
+            }
         }
+        Ok(())
     }
 
     pub fn visualize(&self) {
-        let mut printer = ASTPrinter { indent: 0 };
-        self.visit(&mut printer);
+        let mut output = io::stdout();
+        let mut printer = ASTPrinter {
+            indent: 0,
+            out: &mut output,
+        };
+        let _ = self.visit(&mut printer);
     }
 }
 
+pub enum ASTItem {
+    Stmt(ASTStmt),
+    Use(ASTUse),
+    Mod(ASTMod),
+    // später: Fn, Struct, etc.
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTUse {
+    pub path: Box<[String]>,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTMod {
+    pub name: String,
+}
+
 pub trait ASTVisitor {
-    fn do_visit_stmt(&mut self, stmt: &ASTStmt) {
+    fn do_visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
         match &stmt.kind {
             ASTStmtKind::Expr(expr) => self.visit_expr(expr),
-            ASTStmtKind::Return(_ret) => {}
+            ASTStmtKind::Return(_ret) => todo!(),
             ASTStmtKind::VarDec(dec) => self.visit_var_dec(dec),
             ASTStmtKind::StructDec(dec) => self.visit_struct_dec(dec),
             ASTStmtKind::TupleStructDec(dec) => self.visit_tuple_struct_dec(dec),
         }
     }
 
-    fn visit_stmt(&mut self, stmt: &ASTStmt) {
-        self.do_visit_stmt(stmt);
+    fn visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
+        let _ = self.do_visit_stmt(stmt);
+        Ok(())
     }
 
-    fn do_visit_expr(&mut self, expr: &ASTExpr) {
-        match &expr.kind {
+    fn do_visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
+        match expr.kind.as_ref() {
             ASTExprKind::Integer(_)
             | ASTExprKind::Float(_)
             | ASTExprKind::Byte(_)
@@ -65,7 +92,8 @@ pub trait ASTVisitor {
             | ASTExprKind::ByteString(_)
             | ASTExprKind::Bool(_)
             | ASTExprKind::Variable(_) => {
-                self.visit_valued(&expr.kind);
+                let _ = self.visit_valued(expr.kind.as_ref());
+                Ok(())
             }
             ASTExprKind::Unary(unary) => self.visit_unary_expr(&unary),
             ASTExprKind::Binary(bin) => self.visit_binary_expr(&bin),
@@ -77,62 +105,75 @@ pub trait ASTVisitor {
         }
     }
 
-    fn visit_expr(&mut self, expr: &ASTExpr) {
-        self.do_visit_expr(expr);
+    fn visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
+        let _ = self.do_visit_expr(expr);
+        Ok(())
     }
 
-    fn visit_var_dec(&mut self, expr: &ASTVarDecExpr);
+    fn visit_var_dec(&mut self, expr: &ASTVarDecExpr) -> io::Result<()>;
 
-    fn visit_struct_dec(&mut self, expr: &ASTStructDecExpr);
+    fn visit_struct_dec(&mut self, expr: &ASTStructDecExpr) -> io::Result<()>;
 
-    fn visit_tuple_struct_dec(&mut self, expr: &ASTTupleStructDecExpr);
+    fn visit_tuple_struct_dec(&mut self, expr: &ASTTupleStructDecExpr) -> io::Result<()>;
 
-    fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) {
-        self.visit_expr(&expr.left);
-        self.visit_expr(&expr.right);
+    fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) -> io::Result<()> {
+        let _ = self.visit_expr(&expr.left);
+        let _ = self.visit_expr(&expr.right);
+        Ok(())
     }
 
-    fn visit_paren_expr(&mut self, expr: &ASTParenExpr);
+    fn visit_paren_expr(&mut self, expr: &ASTParenExpr) -> io::Result<()>;
 
-    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr);
+    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) -> io::Result<()>;
 
-    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr);
+    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) -> io::Result<()>;
 
-    fn visit_cast_expr(&mut self, expr: &ASTCastExpr);
+    fn visit_cast_expr(&mut self, expr: &ASTCastExpr) -> io::Result<()>;
 
-    fn visit_block_expr(&mut self, expr: &ASTBlockExpr);
+    fn visit_block_expr(&mut self, expr: &ASTBlockExpr) -> io::Result<()>;
 
-    fn visit_error(&self);
+    fn visit_error(&mut self) -> io::Result<()>;
 
-    fn visit_valued(&self, kind: &ASTExprKind);
+    fn visit_valued(&mut self, kind: &ASTExprKind) -> io::Result<()>;
 }
 
-pub struct ASTPrinter {
+pub struct ASTPrinter<'a, W: Write> {
     indent: usize,
+    out: &'a mut W,
 }
 
 const INDENT_SIZE: usize = 1;
 
-impl ASTVisitor for ASTPrinter {
-    fn visit_stmt(&mut self, stmt: &ASTStmt) {
-        self.print_indent(&format!("{}Statement{}:", SUBTEXT_COLOR, Color::ResetAll));
+impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
+    fn visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
+        let _ = self.line(format_args!(
+            "{}Statement{}:",
+            SUBTEXT_COLOR,
+            Color::ResetAll
+        ));
         self.indent += INDENT_SIZE;
-        ASTVisitor::do_visit_stmt(self, stmt);
+        let _ = ASTVisitor::do_visit_stmt(self, stmt);
         self.indent -= INDENT_SIZE;
         println!();
+        Ok(())
     }
 
-    fn visit_expr(&mut self, expr: &ASTExpr) {
-        self.print_indent(&format!("{}Expression{}:", SUBTEXT_COLOR, Color::ResetAll));
+    fn visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
+        let _ = self.line(format_args!(
+            "{}Expression{}:",
+            SUBTEXT_COLOR,
+            Color::ResetAll
+        ));
         self.indent += INDENT_SIZE;
-        ASTVisitor::do_visit_expr(self, expr);
+        let _ = ASTVisitor::do_visit_expr(self, expr);
         self.indent -= INDENT_SIZE;
+        Ok(())
     }
 
-    fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) {
-        self.print_indent(&format!("{}Binary{}:", SUBTEXT_COLOR, Color::ResetAll));
+    fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) -> io::Result<()> {
+        let _ = self.line(format_args!("{}Binary{}:", SUBTEXT_COLOR, Color::ResetAll));
         self.indent += INDENT_SIZE;
-        self.print_indent(&format!(
+        let _ = self.line(format_args!(
             "{}Operator{}: {}{}{}",
             SUBTEXT_COLOR,
             Color::ResetAll,
@@ -140,67 +181,77 @@ impl ASTVisitor for ASTPrinter {
             expr.operator.kind,
             Color::ResetAll
         ));
-        self.visit_expr(&expr.left);
-        self.visit_expr(&expr.right);
+        let _ = self.visit_expr(&expr.left);
+        let _ = self.visit_expr(&expr.right);
         self.indent -= INDENT_SIZE;
+        Ok(())
     }
 
-    fn visit_paren_expr(&mut self, expr: &ASTParenExpr) {
-        self.print_indent(&format!(
+    fn visit_paren_expr(&mut self, expr: &ASTParenExpr) -> io::Result<()> {
+        let _ = self.line(format_args!(
             "{}Parenthesized{}:",
             SUBTEXT_COLOR,
             Color::ResetAll
         ));
         self.indent += INDENT_SIZE;
-        self.visit_expr(&expr.expr);
+        let _ = self.visit_expr(&expr.expr);
         self.indent -= INDENT_SIZE;
+        Ok(())
     }
 
-    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) {
-        self.print_indent(&format!("{}Assignment{}:", SUBTEXT_COLOR, Color::ResetAll));
-        self.indent += INDENT_SIZE;
-        self.print_indent(&format!(
-            "{}Name{}: {}{}{}",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            LAVENDAR_COLOR,
-            expr.name,
-            Color::ResetAll
-        ));
-        self.print_indent(&format!(
-            "{}Operator{}: {}{}{}",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            BLUE_COLOR,
-            expr.op,
-            Color::ResetAll
-        ));
-        self.visit_expr(&expr.value);
-        self.indent -= INDENT_SIZE;
+    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) -> io::Result<()> {
+        if let TokenKind::Identifier(name) = &expr.target.kind {
+            let _ = self.line(format_args!(
+                "{}Assignment{}:",
+                SUBTEXT_COLOR,
+                Color::ResetAll
+            ));
+            self.indent += INDENT_SIZE;
+            let _ = self.line(format_args!(
+                "{}Name{}: {}{}{}",
+                SUBTEXT_COLOR,
+                Color::ResetAll,
+                LAVENDAR_COLOR,
+                name,
+                Color::ResetAll
+            ));
+            let _ = self.line(format_args!(
+                "{}Operator{}: {}{}{}",
+                SUBTEXT_COLOR,
+                Color::ResetAll,
+                BLUE_COLOR,
+                expr.op,
+                Color::ResetAll
+            ));
+            let _ = self.visit_expr(&expr.value);
+            self.indent -= INDENT_SIZE;
+        }
+        Ok(())
     }
 
-    fn visit_cast_expr(&mut self, expr: &ASTCastExpr) {
-        self.print_indent(&format!("{}Cast{}:", SUBTEXT_COLOR, Color::ResetAll));
+    fn visit_cast_expr(&mut self, expr: &ASTCastExpr) -> io::Result<()> {
+        let _ = self.line(format_args!("{}Cast{}:", SUBTEXT_COLOR, Color::ResetAll));
         self.indent += INDENT_SIZE;
-        self.print_indent(&format!(
+        let _ = self.line(format_args!(
             "{}Type{}: {:?}",
             SUBTEXT_COLOR,
             Color::ResetAll,
             expr.target
         ));
-        self.visit_expr(&expr.expr);
+        let _ = self.visit_expr(&expr.expr);
         self.indent -= INDENT_SIZE;
+        Ok(())
     }
 
-    fn visit_var_dec(&mut self, dec: &ASTVarDecExpr) {
+    fn visit_var_dec(&mut self, dec: &ASTVarDecExpr) -> io::Result<()> {
         if let TokenKind::Identifier(name) = &dec.identifier.kind {
-            self.print_indent(&format!(
+            let _ = self.line(format_args!(
                 "{}Variable Declaration{}:",
                 SUBTEXT_COLOR,
                 Color::ResetAll
             ));
             self.indent += INDENT_SIZE;
-            self.print_indent(&format!(
+            let _ = self.line(format_args!(
                 "{}Identifier{}: {}{}{}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
@@ -208,7 +259,7 @@ impl ASTVisitor for ASTPrinter {
                 name,
                 Color::ResetAll
             ));
-            self.print_indent_sub(&format!(
+            let _ = self.line_sub(format_args!(
                 "{}Publicity{}: {}{}{}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
@@ -220,7 +271,7 @@ impl ASTVisitor for ASTPrinter {
                 },
                 Color::ResetAll
             ));
-            self.print_indent_sub(&format!(
+            let _ = self.line_sub(format_args!(
                 "{}Mutability{}: {}{}{}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
@@ -232,26 +283,27 @@ impl ASTVisitor for ASTPrinter {
                 },
                 Color::ResetAll
             ));
-            self.print_indent_sub(&format!(
+            let _ = self.line_sub(format_args!(
                 "{}Type{}: {:?}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
                 dec.type_.clone().unwrap_or(Ty(0))
             ));
-            self.visit_expr(&dec.initializer);
+            let _ = self.visit_expr(&dec.initializer);
             self.indent -= INDENT_SIZE;
         }
+        Ok(())
     }
 
-    fn visit_struct_dec(&mut self, dec: &ASTStructDecExpr) {
+    fn visit_struct_dec(&mut self, dec: &ASTStructDecExpr) -> io::Result<()> {
         if let TokenKind::Identifier(name) = &dec.identifier.kind {
-            self.print_indent(&format!(
+            let _ = self.line(format_args!(
                 "{}Struct Declaration{}:",
                 SUBTEXT_COLOR,
                 Color::ResetAll
             ));
             self.indent += INDENT_SIZE;
-            self.print_indent(&format!(
+            let _ = self.line(format_args!(
                 "{}Identifier{}: {}{}{}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
@@ -259,7 +311,7 @@ impl ASTVisitor for ASTPrinter {
                 name,
                 Color::ResetAll
             ));
-            self.print_indent_sub(&format!(
+            let _ = self.line_sub(format_args!(
                 "{}Publicity{}: {}{}{}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
@@ -271,22 +323,23 @@ impl ASTVisitor for ASTPrinter {
                 },
                 Color::ResetAll
             ));
-            match &dec.generics {
-                Some(generics) => {
-                    self.print_indent(&format!("{}Generics{}:", SUBTEXT_COLOR, Color::ResetAll));
-                    self.indent += INDENT_SIZE;
-                    for generic in generics.iter() {
-                        self.print_indent_sub(&format!("{:?}", generic));
-                    }
-                    self.indent -= INDENT_SIZE;
+            if !dec.generics.is_empty() {
+                let _ = self.line(format_args!(
+                    "{}Generics{}:",
+                    SUBTEXT_COLOR,
+                    Color::ResetAll
+                ));
+                self.indent += INDENT_SIZE;
+                for generic in dec.generics.iter() {
+                    let _ = self.line_sub(format_args!("{:?}", generic));
                 }
-                None => {}
+                self.indent -= INDENT_SIZE;
             }
-            self.print_indent(&format!("{}Fields{}:", SUBTEXT_COLOR, Color::ResetAll));
+            let _ = self.line(format_args!("{}Fields{}:", SUBTEXT_COLOR, Color::ResetAll));
             self.indent += INDENT_SIZE;
             for field in dec.fields.iter() {
                 if let TokenKind::Identifier(field_name) = &field.identifier.kind {
-                    self.print_indent(&format!(
+                    let _ = self.line(format_args!(
                         "{}Identifier{}: {}{}{}",
                         SUBTEXT_COLOR,
                         Color::ResetAll,
@@ -294,7 +347,7 @@ impl ASTVisitor for ASTPrinter {
                         field_name,
                         Color::ResetAll
                     ));
-                    self.print_indent_sub(&format!(
+                    let _ = self.line_sub(format_args!(
                         "{}Publicity{}: {}{}{}",
                         SUBTEXT_COLOR,
                         Color::ResetAll,
@@ -306,7 +359,7 @@ impl ASTVisitor for ASTPrinter {
                         },
                         Color::ResetAll
                     ));
-                    self.print_indent_sub(&format!(
+                    let _ = self.line_sub(format_args!(
                         "{}Type{}: {}{:?}{}",
                         SUBTEXT_COLOR,
                         Color::ResetAll,
@@ -318,17 +371,18 @@ impl ASTVisitor for ASTPrinter {
             }
             self.indent -= INDENT_SIZE * 2;
         }
+        Ok(())
     }
 
-    fn visit_tuple_struct_dec(&mut self, dec: &ASTTupleStructDecExpr) {
+    fn visit_tuple_struct_dec(&mut self, dec: &ASTTupleStructDecExpr) -> io::Result<()> {
         if let TokenKind::Identifier(name) = &dec.identifier.kind {
-            self.print_indent(&format!(
+            let _ = self.line(format_args!(
                 "{}Tuple Struct Declaration{}:",
                 SUBTEXT_COLOR,
                 Color::ResetAll
             ));
             self.indent += INDENT_SIZE;
-            self.print_indent(&format!(
+            let _ = self.line(format_args!(
                 "{}Identifier{}: {}{}{}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
@@ -336,7 +390,7 @@ impl ASTVisitor for ASTPrinter {
                 name,
                 Color::ResetAll
             ));
-            self.print_indent_sub(&format!(
+            let _ = self.line_sub(format_args!(
                 "{}Publicity{}: {}{}{}",
                 SUBTEXT_COLOR,
                 Color::ResetAll,
@@ -348,48 +402,51 @@ impl ASTVisitor for ASTPrinter {
                 },
                 Color::ResetAll
             ));
-            match &dec.generics {
-                Some(generics) => {
-                    self.print_indent(&format!("{}Generics{}:", SUBTEXT_COLOR, Color::ResetAll));
-                    self.indent += INDENT_SIZE;
-                    for generic in generics.iter() {
-                        self.print_indent_sub(&format!("{:?}", generic));
-                    }
-                    self.indent -= INDENT_SIZE;
+            if !dec.generics.is_empty() {
+                let _ = self.line(format_args!(
+                    "{}Generics{}:",
+                    SUBTEXT_COLOR,
+                    Color::ResetAll
+                ));
+                self.indent += INDENT_SIZE;
+                for generic in dec.generics.iter() {
+                    let _ = self.line_sub(format_args!("{:?}", generic));
                 }
-                None => {}
+                self.indent -= INDENT_SIZE;
             }
-            self.print_indent(&format!("{}Fields{}:", SUBTEXT_COLOR, Color::ResetAll));
+            let _ = self.line(format_args!("{}Fields{}:", SUBTEXT_COLOR, Color::ResetAll));
             self.indent += INDENT_SIZE;
             for field in dec.fields.iter() {
-                self.print_indent_sub(&format!("{:?}", field));
+                let _ = self.line_sub(format_args!("{:?}", field));
             }
             self.indent -= INDENT_SIZE * 2;
         }
+        Ok(())
     }
 
-    fn visit_block_expr(&mut self, block: &ASTBlockExpr) {
-        self.print_indent(&format!("{}Block{}:", SUBTEXT_COLOR, Color::ResetAll));
+    fn visit_block_expr(&mut self, block: &ASTBlockExpr) -> io::Result<()> {
+        let _ = self.line(format_args!("{}Block{}:", SUBTEXT_COLOR, Color::ResetAll));
         self.indent += INDENT_SIZE;
 
         for stmt in block.statements.iter() {
-            self.visit_stmt(stmt);
+            let _ = self.visit_stmt(stmt);
         }
 
         if let Some(expr) = &block.tail_expr {
-            self.print_indent(&format!("{}Tail{}:", SUBTEXT_COLOR, Color::ResetAll));
+            let _ = self.line(format_args!("{}Tail{}:", SUBTEXT_COLOR, Color::ResetAll));
             self.indent += INDENT_SIZE;
-            self.visit_expr(expr);
+            let _ = self.visit_expr(expr);
             self.indent -= INDENT_SIZE;
         }
 
         self.indent -= INDENT_SIZE;
+        Ok(())
     }
 
-    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) {
-        self.print_indent(&format!("{}Unary{}:", SUBTEXT_COLOR, Color::ResetAll));
+    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) -> io::Result<()> {
+        let _ = self.line(format_args!("{}Unary{}:", SUBTEXT_COLOR, Color::ResetAll));
         self.indent += INDENT_SIZE;
-        self.print_indent(&format!(
+        let _ = self.line(format_args!(
             "{}Operator{}: {}{}{}",
             SUBTEXT_COLOR,
             Color::ResetAll,
@@ -397,17 +454,19 @@ impl ASTVisitor for ASTPrinter {
             expr.op.kind,
             Color::ResetAll
         ));
-        self.visit_expr(&expr.expr);
+        let _ = self.visit_expr(&expr.expr);
         self.indent -= INDENT_SIZE;
+        Ok(())
     }
 
-    fn visit_error(&self) {
-        self.print_indent(&format!("{}! Error !{}", RED_COLOR, Color::ResetAll));
+    fn visit_error(&mut self) -> io::Result<()> {
+        let _ = self.line(format_args!("{}! Error !{}", RED_COLOR, Color::ResetAll));
+        Ok(())
     }
 
-    fn visit_valued(&self, kind: &ASTExprKind) {
+    fn visit_valued(&mut self, kind: &ASTExprKind) -> io::Result<()> {
         match kind {
-            ASTExprKind::Integer(v) => self.print_indent_sub(&format!(
+            ASTExprKind::Integer(v) => self.line_sub(format_args!(
                 "{}Integer{}({}{}{})",
                 BLUE_COLOR,
                 Color::ResetAll,
@@ -415,7 +474,7 @@ impl ASTVisitor for ASTPrinter {
                 v,
                 Color::ResetAll
             )),
-            ASTExprKind::Float(v) => self.print_indent_sub(&format!(
+            ASTExprKind::Float(v) => self.line_sub(format_args!(
                 "{}Float{}({}{}{})",
                 BLUE_COLOR,
                 Color::ResetAll,
@@ -423,7 +482,7 @@ impl ASTVisitor for ASTPrinter {
                 v,
                 Color::ResetAll
             )),
-            ASTExprKind::Byte(v) => self.print_indent_sub(&format!(
+            ASTExprKind::Byte(v) => self.line_sub(format_args!(
                 "{}Byte{}({}{:02X}{})",
                 BLUE_COLOR,
                 Color::ResetAll,
@@ -431,40 +490,51 @@ impl ASTVisitor for ASTPrinter {
                 v,
                 Color::ResetAll
             )),
-            ASTExprKind::Char(v) => {
-                let escaped = escape_char(*v);
-                self.print_indent_sub(&format!(
-                    "{}Char{}({}'{}'{})",
-                    BLUE_COLOR,
-                    Color::ResetAll,
-                    GREEN_COLOR,
-                    escaped,
-                    Color::ResetAll
-                ));
+            ASTExprKind::Char(c) => {
+                let _ = self.write_indent_sub();
+                let _ = write!(self.out, "{}", BLUE_COLOR);
+                let _ = write!(self.out, "Char");
+                let _ = write!(self.out, "{}", Color::ResetAll);
+                let _ = write!(self.out, "(");
+                let _ = write!(self.out, "{}", GREEN_COLOR);
+                let _ = escape_char(self.out, *c);
+                let _ = write!(self.out, "{}", Color::ResetAll);
+                let _ = write!(self.out, ")");
+                writeln!(self.out)
             }
-            ASTExprKind::String(v) => {
-                let escaped = escape_string(v);
-                self.print_indent_sub(&format!(
-                    "{}String{}({}\"{}\"{})",
-                    BLUE_COLOR,
-                    Color::ResetAll,
-                    GREEN_COLOR,
-                    escaped,
-                    Color::ResetAll
-                ));
+            ASTExprKind::String(s) => {
+                let _ = self.write_indent_sub();
+                let _ = write!(self.out, "{}", BLUE_COLOR);
+                let _ = write!(self.out, "String");
+                let _ = write!(self.out, "{}", Color::ResetAll);
+                let _ = write!(self.out, "(");
+                let _ = write!(self.out, "{}", GREEN_COLOR);
+                let _ = escape_string(self.out, s);
+                let _ = write!(self.out, "{}", Color::ResetAll);
+                let _ = write!(self.out, ")");
+                writeln!(self.out)
             }
-            ASTExprKind::ByteString(b) => self.print_indent_sub(&format!(
-                "{}Byte String{}([{}{}{}])",
-                BLUE_COLOR,
-                Color::ResetAll,
-                PEACH_COLOR,
-                b.iter()
-                    .map(|b| format!("{:02X}", b))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                Color::ResetAll
-            )),
-            ASTExprKind::Bool(v) => self.print_indent_sub(&format!(
+            ASTExprKind::ByteString(b) => {
+                let _ = self.write_indent_sub();
+                let _ = write!(self.out, "{}", BLUE_COLOR);
+                let _ = write!(self.out, "Byte String");
+                let _ = write!(self.out, "{}", Color::ResetAll);
+                let _ = write!(self.out, "[");
+                let _ = write!(self.out, "{}", PEACH_COLOR);
+
+                for (i, byte) in b.iter().enumerate() {
+                    if i > 0 {
+                        let _ = write!(self.out, ", "); // comma between bytes
+                    }
+                    let _ = write!(self.out, "{:02X}", byte); // hex output
+                }
+
+                let _ = write!(self.out, "{}", Color::ResetAll);
+                let _ = write!(self.out, "]");
+                writeln!(self.out)
+            }
+
+            ASTExprKind::Bool(v) => self.line_sub(format_args!(
                 "{}Bool{}({}{}{})",
                 BLUE_COLOR,
                 Color::ResetAll,
@@ -472,7 +542,7 @@ impl ASTVisitor for ASTPrinter {
                 v,
                 Color::ResetAll
             )),
-            ASTExprKind::Variable(v) => self.print_indent_sub(&format!(
+            ASTExprKind::Variable(v) => self.line_sub(format_args!(
                 "{}Var{}({}{}{})",
                 BLUE_COLOR,
                 Color::ResetAll,
@@ -480,56 +550,111 @@ impl ASTVisitor for ASTPrinter {
                 v,
                 Color::ResetAll
             )),
-            _ => {}
+            _ => unreachable!(),
+        }
+    }
+
+    fn do_visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
+        match &stmt.kind {
+            ASTStmtKind::Expr(expr) => self.visit_expr(expr),
+            ASTStmtKind::Return(_ret) => todo!("return statement"),
+            ASTStmtKind::VarDec(dec) => self.visit_var_dec(dec),
+            ASTStmtKind::StructDec(dec) => self.visit_struct_dec(dec),
+            ASTStmtKind::TupleStructDec(dec) => self.visit_tuple_struct_dec(dec),
+        }
+    }
+
+    fn do_visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
+        match expr.kind.as_ref() {
+            ASTExprKind::Integer(_)
+            | ASTExprKind::Float(_)
+            | ASTExprKind::Byte(_)
+            | ASTExprKind::Char(_)
+            | ASTExprKind::String(_)
+            | ASTExprKind::ByteString(_)
+            | ASTExprKind::Bool(_)
+            | ASTExprKind::Variable(_) => {
+                let _ = self.visit_valued(expr.kind.as_ref());
+                Ok(())
+            }
+            ASTExprKind::Unary(unary) => self.visit_unary_expr(&unary),
+            ASTExprKind::Binary(bin) => self.visit_binary_expr(&bin),
+            ASTExprKind::Parenthesized(expr) => self.visit_paren_expr(&expr),
+            ASTExprKind::Assignment(expr) => self.visit_assignment_expr(expr),
+            ASTExprKind::Cast(expr) => self.visit_cast_expr(expr),
+            ASTExprKind::Block(block) => self.visit_block_expr(block),
+            ASTExprKind::Error => self.visit_error(),
         }
     }
 }
 
-impl ASTPrinter {
-    fn print_indent(&self, text: &str) {
-        let prefix = if self.indent == 0 {
-            ""
-        } else {
-            let s = " |> ";
-            &(" ".repeat((self.indent - 1) * s.len()) + s)
-        };
+const SPACES: [u8; 256] = [b' '; 256];
 
-        println!("{}{}", prefix, text);
+impl<'a, W: Write> ASTPrinter<'a, W> {
+    #[inline(always)]
+    fn write_spaces(out: &mut impl Write, count: usize) -> io::Result<()> {
+        let mut remaining = count;
+        while remaining > 0 {
+            let chunk = remaining.min(SPACES.len());
+            let _ = out.write_all(&SPACES[..chunk]);
+            remaining -= chunk;
+        }
+        Ok(())
     }
 
-    fn print_indent_sub(&self, text: &str) {
-        let prefix = if self.indent == 0 {
-            ""
-        } else {
-            &(" ".repeat(self.indent * 4))
-        };
+    #[inline(always)]
+    fn write_indent(&mut self) -> io::Result<()> {
+        if self.indent > 0 {
+            let _ = Self::write_spaces(self.out, (self.indent - 1) * 4);
+            let _ = self.out.write_all(b" |> ");
+        }
+        Ok(())
+    }
 
-        println!("{}{}", prefix, text);
+    #[inline(always)]
+    fn write_indent_sub(&mut self) -> io::Result<()> {
+        Self::write_spaces(self.out, self.indent * 4)
+    }
+
+    #[inline(always)]
+    fn line(&mut self, args: std::fmt::Arguments) -> io::Result<()> {
+        self.write_indent()?;
+        self.out.write_fmt(args)?;
+        self.out.write_all(b"\n")
+    }
+
+    #[inline(always)]
+    fn line_sub(&mut self, args: std::fmt::Arguments) -> io::Result<()> {
+        self.write_indent_sub()?;
+        self.out.write_fmt(args)?;
+        self.out.write_all(b"\n")
     }
 }
 
-fn escape_string(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            '\n' => "\\n".chars().collect::<Vec<_>>(),
-            '\r' => "\\r".chars().collect(),
-            '\t' => "\\t".chars().collect(),
-            '\\' => "\\\\".chars().collect(),
-            '"' => "\\\"".chars().collect(),
-            c => vec![c],
-        })
-        .collect()
+fn escape_string(out: &mut impl Write, s: &str) -> io::Result<()> {
+    for c in s.chars() {
+        match c {
+            '\n' => out.write_all(b"\\n"),
+            '\r' => out.write_all(b"\\r"),
+            '\t' => out.write_all(b"\\t"),
+            '\\' => out.write_all(b"\\\\"),
+            '"' => out.write_all(b"\\\""),
+            c => write!(out, "{}", c),
+        }?
+    }
+    Ok(())
 }
 
-fn escape_char(c: char) -> String {
+fn escape_char(out: &mut impl Write, c: char) -> io::Result<()> {
     match c {
-        '\n' => "\\n".to_string(),
-        '\r' => "\\r".to_string(),
-        '\t' => "\\t".to_string(),
-        '\\' => "\\\\".to_string(),
-        '\'' => "\\\'".to_string(),
-        c => c.to_string(),
-    }
+        '\n' => out.write_all(b"\\n"),
+        '\r' => out.write_all(b"\\r"),
+        '\t' => out.write_all(b"\\t"),
+        '\\' => out.write_all(b"\\\\"),
+        '\'' => out.write_all(b"\\\'"),
+        c => write!(out, "{}", c),
+    }?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -574,8 +699,8 @@ impl ASTStmt {
     pub fn struct_dec(
         identifier: Token,
         public: bool,
-        generics: Option<SmallVec<[Ty; 2]>>,
-        fields: Vec<ASTStructField>,
+        generics: Box<[Ty]>,
+        fields: Box<[ASTStructField]>,
     ) -> Self {
         Self::new(ASTStmtKind::StructDec(ASTStructDecExpr::new(
             identifier, public, generics, fields,
@@ -585,8 +710,8 @@ impl ASTStmt {
     pub fn tuple_struct_dec(
         identifier: Token,
         public: bool,
-        generics: Option<SmallVec<[Ty; 2]>>,
-        fields: SmallVec<[Ty; 4]>,
+        generics: Box<[Ty]>,
+        fields: Box<[ASTTupleStructField]>,
     ) -> Self {
         Self::new(ASTStmtKind::TupleStructDec(ASTTupleStructDecExpr::new(
             identifier, public, generics, fields,
@@ -609,7 +734,7 @@ pub enum ASTExprKind {
     Parenthesized(ASTParenExpr),
     Assignment(ASTAssignmentExpr),
     Variable(&'static str),
-    Block(ASTBlockExpr),
+    Block(Box<ASTBlockExpr>),
     Error,
 }
 
@@ -637,13 +762,16 @@ impl Display for ASTExprKind {
 
 #[derive(Debug, Clone)]
 pub struct ASTExpr {
-    pub kind: ASTExprKind,
+    pub kind: Box<ASTExprKind>,
     pub span: Span,
 }
 
 impl ASTExpr {
     pub fn new(kind: ASTExprKind, span: Span) -> Self {
-        Self { kind, span }
+        Self {
+            kind: Box::new(kind),
+            span,
+        }
     }
 
     pub fn int(value: u128, span: Span) -> Self {
@@ -689,18 +817,21 @@ impl ASTExpr {
         Self::new(ASTExprKind::Cast(ASTCastExpr::new(expr, target)), span)
     }
 
-    pub fn assignment(name: String, op: TokenKind, value: ASTExpr, span: Span) -> Self {
+    pub fn assignment(target: Token, op: TokenKind, value: ASTExpr, span: Span) -> Self {
         let op_kind = match op {
             TokenKind::Equals => ASTBinaryOperatorKind::Assign,
             TokenKind::PlusEquals => ASTBinaryOperatorKind::AddAssign,
             TokenKind::MinusEquals => ASTBinaryOperatorKind::SubtractAssign,
             TokenKind::AsteriskEquals => ASTBinaryOperatorKind::MultiplyAssign,
             TokenKind::SlashEquals => ASTBinaryOperatorKind::DivideAssign,
-            _ => panic!("unsupported assignment operator"),
+            _ => {
+                dbg!(op);
+                panic!("Invalid assignment operator")
+            }
         };
 
         Self::new(
-            ASTExprKind::Assignment(ASTAssignmentExpr::new(name, op_kind, value)),
+            ASTExprKind::Assignment(ASTAssignmentExpr::new(target, op_kind, value)),
             span,
         )
     }
@@ -714,11 +845,14 @@ impl ASTExpr {
     }
 
     pub fn block(stmts: Vec<ASTStmt>, tail: Option<ASTExpr>, span: Span) -> Self {
-        Self::new(ASTExprKind::Block(ASTBlockExpr::new(stmts, tail)), span)
+        Self::new(
+            ASTExprKind::Block(Box::new(ASTBlockExpr::new(stmts, tail))),
+            span,
+        )
     }
 
-    pub fn error() -> Self {
-        Self::new(ASTExprKind::Error, Span { start: 0, end: 0 })
+    pub fn error(file_id: usize) -> Self {
+        Self::new(ASTExprKind::Error, Span::new(0, 0, file_id))
     }
 }
 
@@ -755,7 +889,7 @@ impl ASTBinaryOperator {
             // Arithmetic
             ASTBinaryOperatorKind::Multiply
             | ASTBinaryOperatorKind::Divide
-            | ASTBinaryOperatorKind::Modulus => 3,
+            | ASTBinaryOperatorKind::Remainder => 3,
             ASTBinaryOperatorKind::Add | ASTBinaryOperatorKind::Subtract => 2,
 
             // Vergleich
@@ -787,7 +921,7 @@ pub enum ASTBinaryOperatorKind {
     Subtract,
     Multiply,
     Divide,
-    Modulus,
+    Remainder,
 
     // Assignment
     Assign,
@@ -829,7 +963,7 @@ impl Display for ASTBinaryOperatorKind {
             ASTBinaryOperatorKind::MultiplyAssign => write!(f, "Multiply (*) & Assign (=)"),
             ASTBinaryOperatorKind::Divide => write!(f, "Divide (/)"),
             ASTBinaryOperatorKind::DivideAssign => write!(f, "Divide (/) & Assign (=)"),
-            ASTBinaryOperatorKind::Modulus => write!(f, "Modulus (%)"),
+            ASTBinaryOperatorKind::Remainder => write!(f, "Remainder (%)"),
 
             ASTBinaryOperatorKind::Equal => write!(f, "[?] Equal (==)"),
             ASTBinaryOperatorKind::NotEqual => write!(f, "[?] Not Equal (!=)"),
@@ -853,14 +987,12 @@ impl Display for ASTBinaryOperatorKind {
 
 #[derive(Debug, Clone)]
 pub struct ASTParenExpr {
-    pub expr: Box<ASTExpr>,
+    pub expr: ASTExpr,
 }
 
 impl ASTParenExpr {
     pub fn new(expr: ASTExpr) -> Self {
-        Self {
-            expr: Box::new(expr),
-        }
+        Self { expr }
     }
 }
 
@@ -893,18 +1025,18 @@ impl ASTVarDecExpr {
 
 #[derive(Debug, Clone)]
 pub struct ASTStructDecExpr {
-    identifier: Token,
-    pub_: bool,
-    generics: Option<SmallVec<[Ty; 2]>>,
-    fields: Vec<ASTStructField>,
+    pub identifier: Token,
+    pub pub_: bool,
+    pub generics: Box<[Ty]>,
+    pub fields: Box<[ASTStructField]>,
 }
 
 impl ASTStructDecExpr {
     pub fn new(
         identifier: Token,
         pub_: bool,
-        generics: Option<SmallVec<[Ty; 2]>>,
-        fields: Vec<ASTStructField>,
+        generics: Box<[Ty]>,
+        fields: Box<[ASTStructField]>,
     ) -> Self {
         Self {
             identifier,
@@ -917,26 +1049,25 @@ impl ASTStructDecExpr {
 
 #[derive(Debug, Clone)]
 pub struct ASTStructField {
-    // identifier ist optional: bei Tuple Struct None
-    identifier: Token,
-    pub_: bool,
-    type_: Ty,
+    pub identifier: Token,
+    pub pub_: bool,
+    pub type_: Ty,
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTTupleStructDecExpr {
-    identifier: Token,
-    pub_: bool,
-    generics: Option<SmallVec<[Ty; 2]>>,
-    fields: SmallVec<[Ty; 4]>,
+    pub identifier: Token,
+    pub pub_: bool,
+    pub generics: Box<[Ty]>,
+    pub fields: Box<[ASTTupleStructField]>,
 }
 
 impl ASTTupleStructDecExpr {
     pub fn new(
         identifier: Token,
         pub_: bool,
-        generics: Option<SmallVec<[Ty; 2]>>,
-        fields: SmallVec<[Ty; 4]>,
+        generics: Box<[Ty]>,
+        fields: Box<[ASTTupleStructField]>,
     ) -> Self {
         Self {
             identifier,
@@ -948,16 +1079,22 @@ impl ASTTupleStructDecExpr {
 }
 
 #[derive(Debug, Clone)]
+pub struct ASTTupleStructField {
+    pub pub_: bool,
+    pub type_: Ty,
+}
+
+#[derive(Debug, Clone)]
 pub struct ASTAssignmentExpr {
-    name: String,
+    target: Token,
     op: ASTBinaryOperatorKind,
     value: Box<ASTExpr>,
 }
 
 impl ASTAssignmentExpr {
-    pub fn new(name: String, op: ASTBinaryOperatorKind, value: ASTExpr) -> Self {
+    pub fn new(target: Token, op: ASTBinaryOperatorKind, value: ASTExpr) -> Self {
         Self {
-            name,
+            target,
             op,
             value: Box::new(value),
         }
@@ -1005,11 +1142,11 @@ pub enum ASTUnaryOperatorKind {
     Negate, // -
     Not,    // !
 
-    PreIncrement,
-    PostIncrement,
+    PreIncrement,  // ++x
+    PostIncrement, // x++
 
-    PreDecrement,
-    PostDecrement,
+    PreDecrement,  // --x
+    PostDecrement, // x--
 
     Ref,    // &
     RefMut, // &mut

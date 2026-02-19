@@ -1,19 +1,19 @@
 use smallvec::smallvec;
 
-use crate::Compiler;
 use crate::ast::scope::Symbol;
 use crate::ast::traits::TraitKind;
-use crate::ast::types::{ InferTy, Primitive::*, Ty, TyKind };
 use crate::ast::{
-    AST, ASTBinaryOperatorKind, ASTExpr, ASTExprKind, ASTStmt, ASTStmtKind, ASTVarDecExpr
+    ASTBinaryOperatorKind, ASTExpr, ASTExprKind, ASTStmt, ASTStmtKind, ASTVarDecExpr, AST,
 };
-use crate::diagnostics::{ DiagnosticBuilder, DiagnosticKind, Literal, DiagnosticBag };
+use crate::reports::{Label, Report, ReportBag, ReportKind};
+use crate::Compiler;
 use crate::TokenKind;
 
 use super::scope::{NameInterner, ScopeCtx};
-use super::token::Span;
 use super::traits::TraitCtx;
-use super::types::{InferCtx, TyInterner, SymbolInterner};
+use super::ASTItem;
+use crate::types::inference::{InferCtx, InferTy};
+use crate::types::{Primitive::*, SymbolInterner, Ty, TyInterner, TyKind};
 
 pub struct TypeCkCtx<'a> {
     pub infer_ctx: &'a mut InferCtx,
@@ -22,23 +22,35 @@ pub struct TypeCkCtx<'a> {
     pub scopes: &'a mut ScopeCtx,
     pub name_interner: &'a mut NameInterner,
     pub symbol_interner: &'a mut SymbolInterner,
-    pub diagnostics: &'a mut DiagnosticBag,
+    pub reports: &'a mut ReportBag,
 }
 
 pub struct TypeChecker {}
 
 impl<'a> TypeChecker {
     pub fn new() -> Self {
-        Self { }
+        Self {}
+    }
+
+    fn is_error(&self, ctx: &TypeCkCtx, ty: &InferTy) -> bool {
+        match ty {
+            InferTy::Known(t) => *ctx.ty_interner.kind(*t) == TyKind::Error,
+            _ => false,
+        }
     }
 
     fn type_mismatch(&self, ctx: &mut TypeCkCtx, expr: &ASTExpr, given: Ty, expected: Ty) {
-        ctx.diagnostics.push(
-            DiagnosticBuilder::error(
-                DiagnosticKind::TypeMismatch { given, expected },
-                expr.span.clone(),
-            )
-            .build(),
+        ctx.reports.push(
+            Report::build(ReportKind::Error, expr.span)
+                .with_message("mismatched types")
+                .with_label(Label::new(expr.span).with_message(format_args!(
+                        "`{}` and `{}` cannot match",
+                        ctx.ty_interner
+                            .display_with_symbols(given, ctx.symbol_interner),
+                        ctx.ty_interner
+                            .display_with_symbols(expected, ctx.symbol_interner)
+                    )))
+                .finish(),
         );
     }
 
@@ -50,11 +62,27 @@ impl<'a> TypeChecker {
             scopes: &mut compiler.scopes,
             name_interner: &mut compiler.name_interner,
             symbol_interner: &mut compiler.symbol_interner,
-            diagnostics: &mut compiler.diagnostics,
+            reports: &mut compiler.reports,
         };
 
-        for stmt in &ast.stmts {
-            self.check_stmt(&mut ctx, stmt);
+        for i in &ast.items {
+            self.check_item(&mut ctx, i);
+        }
+    }
+
+    fn check_item(&self, ctx: &mut TypeCkCtx, item: &ASTItem) {
+        match item {
+            ASTItem::Stmt(stmt) => self.check_stmt(ctx, stmt),
+
+            ASTItem::Use(_) => {
+                // use ist rein Namensauflösung → kein Typchecking
+            }
+
+            ASTItem::Mod(_) => {
+                // Modul-Scope push/pop
+            } // später:
+              // ASTItem::Fn(f) => self.check_fn(ctx, f),
+              // ASTItem::Struct(s) => self.check_struct(ctx, s),
         }
     }
 
@@ -64,12 +92,13 @@ impl<'a> TypeChecker {
                 let ty = self.check_expr(ctx, expr, None);
 
                 if !self.is_valid_expr_stmt(ctx, expr, ty) {
-                    ctx.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::UnusedExpressionResult,
-                            expr.span.clone(),
-                        )
-                        .build(),
+                    ctx.reports.push(
+                        Report::build(ReportKind::Warning, expr.span)
+                            .with_message("unused expression result")
+                            .with_label(
+                                Label::new(expr.span).with_message("consider: `dec _ = ...;`"),
+                            )
+                            .finish(),
                     );
                 }
             }
@@ -88,12 +117,17 @@ impl<'a> TypeChecker {
         }
     }
 
-    fn check_expr(&self, ctx: &mut TypeCkCtx, expr: &ASTExpr, expected: Option<InferTy>) -> InferTy {
+    fn check_expr(
+        &self,
+        ctx: &mut TypeCkCtx,
+        expr: &ASTExpr,
+        expected: Option<InferTy>,
+    ) -> InferTy {
         let err_ty = InferTy::Known(ctx.ty_interner.intern(TyKind::Error));
         let bool_ty = InferTy::Known(ctx.ty_interner.intern(TyKind::Primitive(Bool)));
         let u8_tid = ctx.ty_interner.intern(TyKind::Primitive(U8));
 
-        match &expr.kind {
+        match expr.kind.as_ref() {
             ASTExprKind::Error => err_ty,
 
             ASTExprKind::Integer(value) => {
@@ -101,7 +135,7 @@ impl<'a> TypeChecker {
 
                 if let Some(expected) = expected {
                     if let InferTy::Known(ty) = expected {
-                        self.check_literal_fits_int(ctx, *value as i64, ty, &expr.span);
+                        IntValue { value: *value }.fits(ty, ctx.ty_interner);
                     }
 
                     let _ = ctx.infer_ctx.unify(ctx.ty_interner, v.clone(), expected);
@@ -115,7 +149,7 @@ impl<'a> TypeChecker {
 
                 if let Some(expected) = expected {
                     if let InferTy::Known(ty) = expected {
-                        self.check_literal_fits_float(ctx, *value, ty, &expr.span);
+                        FloatValue { value: *value }.fits(ty, ctx.ty_interner);
                     }
 
                     let _ = ctx.infer_ctx.unify(ctx.ty_interner, v.clone(), expected);
@@ -127,22 +161,24 @@ impl<'a> TypeChecker {
             ASTExprKind::Bool(_) => bool_ty,
             ASTExprKind::Byte(_) => InferTy::Known(u8_tid),
             ASTExprKind::Char(_) => InferTy::Known(ctx.ty_interner.intern(TyKind::Primitive(Char))),
-            ASTExprKind::String(_) => InferTy::Known(ctx.ty_interner.intern(TyKind::Primitive(String))),
+            ASTExprKind::String(_) => {
+                InferTy::Known(ctx.ty_interner.intern(TyKind::Primitive(String)))
+            }
             ASTExprKind::ByteString(_) => InferTy::Known(ctx.ty_interner.intern(TyKind::Generic {
                 base: ctx.symbol_interner.intern("Vec"),
-                args: smallvec![u8_tid],
+                args: Box::new([u8_tid]),
             })),
             ASTExprKind::Parenthesized(expr) => self.check_expr(ctx, &expr.expr, None),
             ASTExprKind::Variable(name) => {
                 let sym_id_pre = ctx.name_interner.intern(&name);
-                let Some(sym_id) = ctx.scopes.lookup(sym_id_pre) else {
-                    ctx.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::UnknownIdentifier { identifier: name.to_string() },
-                            expr.span.clone(),
-                        )
-                        .build(),
+                let Some(sym_id) = ctx.scopes.lookup_symbol(sym_id_pre) else {
+                    ctx.reports.push(
+                        Report::build(ReportKind::Error, expr.span)
+                            .with_message("unknown identifier")
+                            .with_label(Label::new(expr.span).with_message("undeclared variable"))
+                            .finish(),
                     );
+
                     return err_ty;
                 };
 
@@ -153,52 +189,54 @@ impl<'a> TypeChecker {
                 let rhs = self.check_expr(ctx, &bin.right, expected);
 
                 use super::ASTBinaryOperatorKind::*;
-                if lhs == err_ty || rhs == err_ty {
+                if self.is_error(ctx, &lhs) || self.is_error(ctx, &rhs) {
                     return err_ty;
                 }
 
                 match bin.operator.kind {
-                    Add | Subtract | Multiply | Divide | Modulus => {
+                    Add | Subtract | Multiply | Divide | Remainder => {
                         let lhs_ty = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, lhs);
                         let rhs_ty = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, rhs);
 
-                        if let Some(result_ty) = ctx.trait_ctx.implements(
-                            lhs_ty,
-                            match bin.operator.kind {
-                                Add => TraitKind::Add,
-                                Subtract => TraitKind::Sub,
-                                Multiply => TraitKind::Mul,
-                                Divide => TraitKind::Div,
-                                Modulus => TraitKind::Rem,
-                                _ => unreachable!(),
-                            },
-                            &[rhs_ty],
-                        ) {
+                        let trait_kind = match bin.operator.kind {
+                            Add => TraitKind::Add,
+                            Subtract => TraitKind::Sub,
+                            Multiply => TraitKind::Mul,
+                            Divide => TraitKind::Div,
+                            Remainder => TraitKind::Rem,
+                            _ => unreachable!(),
+                        };
+
+                        if let Some(result_ty) =
+                            ctx.trait_ctx.implements(lhs_ty, trait_kind, &[rhs_ty])
+                        {
                             InferTy::Known(result_ty)
                         } else {
-                            let lhs_kind = ctx.ty_interner.kind(lhs_ty).clone();
-                            let rhs_kind = ctx.ty_interner.kind(rhs_ty).clone();
-
-                            ctx.diagnostics.push(
-                                DiagnosticBuilder::error(
-                                    DiagnosticKind::InvalidBinaryOperator {
-                                        op: bin.operator.kind.clone(),
-                                        left: lhs_ty,
-                                        right: rhs_ty,
-                                    },
-                                    expr.span.clone(),
-                                )
-                                .label(
-                                    expr.span.clone(),
-                                    format!(
-                                        "Operator `{}` not defined for types `{}` and `{}`",
-                                        bin.operator.kind,
-                                        lhs_kind,
-                                        rhs_kind
-                                    ),
-                                )
-                                .build(),
+                            ctx.reports.push(
+                                Report::build(ReportKind::Error, expr.span)
+                                    .with_message("invalid binary operator")
+                                    .with_label(
+                                        Label::new(expr.span)
+                                            .with_message(format_args!(
+                                                "operator `{}` not appliable",
+                                                bin.operator.kind
+                                            ))
+                                            .with_message(format_args!(
+                                                "trait `{:?}` not defined for types `{}` and `{}`",
+                                                trait_kind,
+                                                ctx.ty_interner.display_with_symbols(
+                                                    lhs_ty,
+                                                    ctx.symbol_interner
+                                                ),
+                                                ctx.ty_interner.display_with_symbols(
+                                                    rhs_ty,
+                                                    ctx.symbol_interner
+                                                )
+                                            )),
+                                    )
+                                    .finish(),
                             );
+
                             err_ty
                         }
                     }
@@ -210,22 +248,36 @@ impl<'a> TypeChecker {
 
                     // Assign-BinOps wie +=, -=
                     AddAssign | SubtractAssign | MultiplyAssign | DivideAssign => {
-                        let Some(lhs_sym_id) = (match &bin.left.kind {
+                        let Some(lhs_sym_id) = (match bin.left.kind.as_ref() {
                             ASTExprKind::Variable(name) => {
                                 let sym_id_pre = ctx.name_interner.intern(&name);
                                 ctx.scopes.lookup_current(sym_id_pre)
                             }
                             _ => None,
                         }) else {
-                            ctx.diagnostics.push(
-                                DiagnosticBuilder::error(
-                                    DiagnosticKind::InvalidAssignmentTarget,
-                                    bin.left.span.clone(),
-                                )
-                                .build(),
+                            ctx.reports.push(
+                                Report::build(ReportKind::Error, expr.span)
+                                    .with_message("invalid assignment target")
+                                    .with_label(
+                                        Label::new(expr.span).with_message("cannot assign to here"),
+                                    )
+                                    .finish(),
                             );
+
                             return err_ty;
                         };
+
+                        // check mutability
+                        if !ctx.scopes.is_mutable(lhs_sym_id) {
+                            ctx.reports.push(
+                                Report::build(ReportKind::Error, expr.span)
+                                    .with_message("assign to immutable variable")
+                                    .with_label(Label::new(expr.span).with_message("immutable"))
+                                    .finish(),
+                            );
+
+                            return err_ty;
+                        }
 
                         // self.types.unify(lhs_sym.type_.clone(), rhs);
                         InferTy::Known(ctx.scopes.symbol_type(lhs_sym_id))
@@ -235,17 +287,34 @@ impl<'a> TypeChecker {
                 }
             }
             ASTExprKind::Assignment(assign) => {
-                let sym_id_pre = ctx.name_interner.intern(&assign.name);
-                let Some(sym_id) = ctx.scopes.lookup_current(sym_id_pre) else {
-                    ctx.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::UnknownIdentifier { identifier: assign.name.to_string() },
-                            expr.span.clone(),
-                        )
-                        .build(),
+                let Some(sym_id) = (match &assign.target.kind {
+                    TokenKind::Identifier(name) => {
+                        let sym_id_pre = ctx.name_interner.intern(&name);
+                        ctx.scopes.lookup_current(sym_id_pre)
+                    }
+                    _ => None,
+                }) else {
+                    ctx.reports.push(
+                        Report::build(ReportKind::Error, expr.span)
+                            .with_message("invalid assignment target")
+                            .with_label(Label::new(expr.span).with_message("cannot assign to here"))
+                            .finish(),
                     );
+
                     return err_ty;
                 };
+
+                // check mutability
+                if !ctx.scopes.is_mutable(sym_id) {
+                    ctx.reports.push(
+                        Report::build(ReportKind::Error, expr.span)
+                            .with_message("assign to immutable variable")
+                            .with_label(Label::new(expr.span).with_message("immutable"))
+                            .finish(),
+                    );
+
+                    return err_ty;
+                }
 
                 let lhs = ctx.scopes.symbol_type(sym_id);
 
@@ -254,18 +323,21 @@ impl<'a> TypeChecker {
                     | ASTBinaryOperatorKind::SubtractAssign
                     | ASTBinaryOperatorKind::MultiplyAssign
                     | ASTBinaryOperatorKind::DivideAssign => {
-
                         // EXPECTED ist der Typ von `a`
                         let rhs = self.check_expr(ctx, &assign.value, Some(InferTy::Known(lhs)));
 
-                        let _ = ctx.infer_ctx.unify(ctx.ty_interner, rhs, InferTy::Known(lhs));
+                        let _ = ctx
+                            .infer_ctx
+                            .unify(ctx.ty_interner, rhs, InferTy::Known(lhs));
 
                         InferTy::Known(lhs)
                     }
 
                     ASTBinaryOperatorKind::Assign => {
                         let rhs = self.check_expr(ctx, &assign.value, Some(InferTy::Known(lhs)));
-                        let _ = ctx.infer_ctx.unify(ctx.ty_interner, rhs, InferTy::Known(lhs));
+                        let _ = ctx
+                            .infer_ctx
+                            .unify(ctx.ty_interner, rhs, InferTy::Known(lhs));
                         InferTy::Known(lhs)
                     }
 
@@ -279,38 +351,71 @@ impl<'a> TypeChecker {
 
                 match unary.op.kind {
                     Negate => {
-                        if let Some(output) = ctx.trait_ctx
-                            .implements(ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, inner.clone()), TraitKind::Neg, &[])
-                        {
-                            InferTy::Known(output) // <- hier wird UInt->Int korrekt
-                        } else {
-                            ctx.diagnostics.push(
-                                DiagnosticBuilder::error(
-                                    DiagnosticKind::InvalidUnaryOperator {
-                                        op: Negate,
-                                        ty: ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, inner),
-                                    },
-                                    unary.op.token.span.clone(),
-                                )
-                                .build(),
-                            );
-                            err_ty
-                        }
-                    }
-                    Not => {
+                        let inner_ty = ctx
+                            .infer_ctx
+                            .resolve_to_ty(&mut ctx.ty_interner, inner.clone());
+
                         if let Some(output) =
-                            ctx.trait_ctx
-                                .implements(ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, inner.clone()), TraitKind::Not, &[])
+                            ctx.trait_ctx.implements(inner_ty, TraitKind::Neg, &[])
                         {
                             InferTy::Known(output)
                         } else {
-                            ctx.diagnostics.push(
-                                DiagnosticBuilder::error(
-                                    DiagnosticKind::InvalidUnaryOperator { op: Not, ty: ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, inner) },
-                                    unary.op.token.span.clone(),
-                                )
-                                .build(),
+                            ctx.reports.push(
+                                Report::build(ReportKind::Error, expr.span)
+                                    .with_message("invalid unary operator")
+                                    .with_label(
+                                        Label::new(expr.span)
+                                            .with_message(format_args!(
+                                                "operator `{}` not appliable",
+                                                unary.op.kind
+                                            ))
+                                            .with_message(format_args!(
+                                                "Trait `{:?}` not defined for types `{}`",
+                                                TraitKind::Neg,
+                                                ctx.ty_interner.display_with_symbols(
+                                                    inner_ty,
+                                                    ctx.symbol_interner
+                                                ),
+                                            )),
+                                    )
+                                    .finish(),
                             );
+
+                            err_ty
+                        }
+                    }
+
+                    Not => {
+                        let inner_ty = ctx
+                            .infer_ctx
+                            .resolve_to_ty(&mut ctx.ty_interner, inner.clone());
+
+                        if let Some(output) =
+                            ctx.trait_ctx.implements(inner_ty, TraitKind::Not, &[])
+                        {
+                            InferTy::Known(output)
+                        } else {
+                            ctx.reports.push(
+                                Report::build(ReportKind::Error, expr.span)
+                                    .with_message("invalid unary operator")
+                                    .with_label(
+                                        Label::new(expr.span)
+                                            .with_message(format_args!(
+                                                "operator `{}` not appliable",
+                                                unary.op.kind
+                                            ))
+                                            .with_message(format_args!(
+                                                "Trait `{:?}` not defined for types `{}`",
+                                                TraitKind::Neg,
+                                                ctx.ty_interner.display_with_symbols(
+                                                    inner_ty,
+                                                    ctx.symbol_interner
+                                                ),
+                                            )),
+                                    )
+                                    .finish(),
+                            );
+
                             err_ty
                         }
                     }
@@ -320,31 +425,57 @@ impl<'a> TypeChecker {
                     }
 
                     Ref => {
-                        let inner_ty = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, inner);
+                        let inner_ty = ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, inner);
                         let ref_ty = ctx.ty_interner.intern(TyKind::Ref(inner_ty));
                         InferTy::Known(ref_ty)
                     }
 
                     RefMut => {
-                        let inner_ty = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, inner);
+                        let inner_ty = ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, inner);
                         let ref_ty = ctx.ty_interner.intern(TyKind::Ref(inner_ty));
+
+                        if *ctx.ty_interner.kind(inner_ty) == TyKind::Error {
+                            return InferTy::Known(ctx.ty_interner.intern(TyKind::Error));
+                        }
+
                         InferTy::Known(ref_ty)
                     }
 
                     Deref => {
-                        let resolved = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, inner);
+                        let resolved = ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, inner);
 
-                        let deref = match ctx.ty_interner.kind(resolved) {
-                            TyKind::Ref(t) | TyKind::MutRef(t) => Some(*t),
-                            _ => None,
+                        if *ctx.ty_interner.kind(resolved) == TyKind::Error {
+                            return InferTy::Known(ctx.ty_interner.intern(TyKind::Error));
+                        }
+
+                        let deref = match *ctx.ty_interner.kind(resolved) {
+                            TyKind::Ref(t) | TyKind::MutRef(t) => Some(t),
+                            _ => {
+                                ctx.reports.push(
+                                    Report::build(ReportKind::Error, expr.span)
+                                        .with_message("invalid dereference")
+                                        .with_label(Label::new(expr.span).with_message(
+                                            format_args!(
+                                                "type `{}` cannot be dereferenced",
+                                                ctx.ty_interner.display_with_symbols(
+                                                    resolved,
+                                                    ctx.symbol_interner
+                                                )
+                                            ),
+                                        ))
+                                        .finish(),
+                                );
+
+                                None
+                            }
                         };
 
                         let ty = deref.unwrap_or_else(|| {
-                            ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, err_ty)
+                            ctx.infer_ctx.resolve_to_ty(&mut ctx.ty_interner, err_ty)
                         });
 
                         InferTy::Known(ty)
-                    },
+                    }
                 }
             }
             ASTExprKind::Cast(cast) => {
@@ -355,7 +486,11 @@ impl<'a> TypeChecker {
                 match ctx.ty_interner.kind(from.clone()) {
                     // Primitive → Primitive prüfen
                     TyKind::Primitive(_) => {
-                        if ctx.trait_ctx.implements(from.clone(), TraitKind::Cast, &[to]).is_some() {
+                        if ctx
+                            .trait_ctx
+                            .implements(from.clone(), TraitKind::Cast, &[to])
+                            .is_some()
+                        {
                             InferTy::Known(to)
                         } else {
                             self.type_mismatch(ctx, expr, from, to);
@@ -379,7 +514,8 @@ impl<'a> TypeChecker {
                 let result = if let Some(expr) = &block.tail_expr {
                     self.check_expr(ctx, expr, None)
                 } else {
-                    InferTy::Known(ctx.ty_interner.intern(TyKind::Tuple(smallvec![]))) // unit
+                    InferTy::Known(ctx.ty_interner.intern(TyKind::Tuple(smallvec![])))
+                    // unit
                 };
 
                 ctx.scopes.pop();
@@ -396,24 +532,31 @@ impl<'a> TypeChecker {
 
         let expected = dec.type_.map(|t| InferTy::Known(t));
 
-        let init_ty = self.check_expr(ctx, &dec.initializer, expected.clone());
+        let init_ty = self.check_expr(ctx, &dec.initializer, None);
+
+        if self.is_error(ctx, &init_ty) {
+            return;
+        }
 
         if let Some(expected) = expected.clone() {
-            if ctx.infer_ctx.unify(ctx.ty_interner, init_ty.clone(), expected.clone()).is_err() {
-                let init_ty = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, init_ty.clone());
-                let expected = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, expected.clone());
-                self.type_mismatch(
-                    ctx,
-                    &dec.initializer,
-                    init_ty,
-                    expected,
-                );
+            if ctx
+                .infer_ctx
+                .unify(ctx.ty_interner, init_ty.clone(), expected.clone())
+                .is_err()
+            {
+                let init_ty = ctx
+                    .infer_ctx
+                    .resolve_to_ty(ctx.ty_interner, init_ty.clone());
+                let expected = ctx
+                    .infer_ctx
+                    .resolve_to_ty(ctx.ty_interner, expected.clone());
+                self.type_mismatch(ctx, &dec.initializer, init_ty, expected);
             }
         }
 
         let final_ty = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, init_ty);
 
-        let _ = ctx.scopes.define(Symbol {
+        let _ = ctx.scopes.define_symbol(Symbol {
             name: ctx.name_interner.intern(name),
             type_: final_ty,
             mut_: dec.mut_,
@@ -430,26 +573,28 @@ impl<'a> TypeChecker {
             _ => return false,
         };
 
-        match &expr.kind {
+        match expr.kind.as_ref() {
             // explizite Side-Effects
             Assignment(_) => true,
 
             // +=, -=, etc (sind bei dir Binary)
-            Binary(bin) => {
-                 match bin.operator.kind {
-                    ASTBinaryOperatorKind::Assign | ASTBinaryOperatorKind::AddAssign | ASTBinaryOperatorKind::SubtractAssign
-                    | ASTBinaryOperatorKind::MultiplyAssign | ASTBinaryOperatorKind::DivideAssign => true,
-                    _ => false,
-                }
-            }
+            Binary(bin) => match bin.operator.kind {
+                ASTBinaryOperatorKind::Assign
+                | ASTBinaryOperatorKind::AddAssign
+                | ASTBinaryOperatorKind::SubtractAssign
+                | ASTBinaryOperatorKind::MultiplyAssign
+                | ASTBinaryOperatorKind::DivideAssign => true,
+                _ => false,
+            },
 
             // Funktionsaufrufe (falls vorhanden)
             // Call(_) => true,
 
             // Block: prüfen, ob er Side-Effects enthält
-            Block(block) => {
-                block.statements.iter().any(|s| self.stmt_has_side_effect(s))
-            }
+            Block(block) => block
+                .statements
+                .iter()
+                .any(|s| self.stmt_has_side_effect(s)),
 
             // unit-Typ (z. B. `{}` oder `()`)
             _ if *ctx.ty_interner.kind(ty) == TyKind::Tuple(smallvec![]) => true,
@@ -471,16 +616,14 @@ impl<'a> TypeChecker {
     fn expr_has_side_effect(&self, expr: &ASTExpr) -> bool {
         use ASTExprKind::*;
 
-        match &expr.kind {
+        match expr.kind.as_ref() {
             Assignment(_) => true,
 
             // Call(_) => true,
-
             Unary(un) => self.expr_has_side_effect(&un.expr),
 
             Binary(bin) => {
-                self.expr_has_side_effect(&bin.left)
-                    || self.expr_has_side_effect(&bin.right)
+                self.expr_has_side_effect(&bin.left) || self.expr_has_side_effect(&bin.right)
             }
 
             Block(block) => block
@@ -492,51 +635,102 @@ impl<'a> TypeChecker {
         }
     }
 
-    fn check_literal_fits_int(&self, ctx: &mut TypeCkCtx, value: i64, ty: Ty, span: &Span) {
-        use super::types::Primitive::*;
+    // fn check_literal_fits_int(&self, ctx: &mut TypeCkCtx, value: i64, ty: Ty, span: &Span) {
+    //     use crate::types::Primitive::*;
 
-        let (fits, rty) = match ctx.ty_interner.kind(ty) {
-            TyKind::Primitive(I8) => (value >= i8::MIN as i64 && value <= i8::MAX as i64, Literal::Int(value as i128)),
-            TyKind::Primitive(I16) => (value >= i16::MIN as i64 && value <= i16::MAX as i64, Literal::Int(value as i128)),
-            TyKind::Primitive(I32) => (value >= i32::MIN as i64 && value <= i32::MAX as i64, Literal::Int(value as i128)),
-            TyKind::Primitive(I64) => (true, Literal::Int(value as i128)),
-            TyKind::Primitive(I128) => (true, Literal::Int(value as i128)),
+    //     let fits = match ctx.ty_interner.kind(ty) {
+    //         TyKind::Primitive(I8) => value >= i8::MIN as i64 && value <= i8::MAX as i64,
+    //         TyKind::Primitive(I16) => value >= i16::MIN as i64 && value <= i16::MAX as i64,
+    //         TyKind::Primitive(I32) => value >= i32::MIN as i64 && value <= i32::MAX as i64,
+    //         TyKind::Primitive(I64) => true,
+    //         TyKind::Primitive(I128) => true,
 
-            TyKind::Primitive(U8) => (value >= 0 && value <= u8::MAX as i64, Literal::UInt(value as u128)),
-            TyKind::Primitive(U16) => (value >= 0 && value <= u16::MAX as i64, Literal::UInt(value as u128)),
-            TyKind::Primitive(U32) => (value >= 0 && value <= u32::MAX as i64, Literal::UInt(value as u128)),
-            TyKind::Primitive(U64) => (value >= 0, Literal::UInt(value as u128)),
-            TyKind::Primitive(U128) => (value >= 0, Literal::UInt(value as u128)),
+    //         TyKind::Primitive(U8) => value >= 0 && value <= u8::MAX as i64,
+    //         TyKind::Primitive(U16) => value >= 0 && value <= u16::MAX as i64,
+    //         TyKind::Primitive(U32) => value >= 0 && value <= u32::MAX as i64,
+    //         TyKind::Primitive(U64) => value >= 0, // alles <= i64::MAX passt in u64
+    //         TyKind::Primitive(U128) => value >= 0,
 
-            _ => (false, Literal::Int(value as i128)),
-        };
+    //         _ => false,
+    //     };
 
-        if !fits {
-            ctx.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::TypeOverflow { value: rty, ty },
-                    span.clone(),
-                )
-                .build(),
-            );
+    //     if !fits {
+    //         ctx.reports.push(
+    //             Report::build(ReportKind::Error, *span)
+    //                 .with_message("type overflow")
+    //                 .with_label(Label::new(*span).with_message(format_args!(
+    //                 "value does not fit type `{}`",
+    //                 ctx.ty_interner.display_with_symbols(ty, ctx.symbol_interner)
+    //             )))
+    //                 .finish(),
+    //         );
+    //     }
+    // }
+
+    // fn check_literal_fits_float(&self, ctx: &mut TypeCkCtx, value: f64, ty: Ty, span: &Span) {
+    //     let fits = match ctx.ty_interner.kind(ty) {
+    //         TyKind::Primitive(F32) => value >= f32::MIN as f64 && value <= f32::MAX as f64,
+    //         TyKind::Primitive(F64) => value >= f64::MIN && value <= f64::MAX,
+    //         _ => false,
+    //     };
+
+    //     if !fits {
+    //         ctx.reports.push(
+    //             Report::build(ReportKind::Error, *span)
+    //                 .with_message("type overflow")
+    //                 .with_label(Label::new(*span).with_message(format_args!(
+    //                         "value does not fit type `{}`",
+    //                         ctx.ty_interner
+    //                             .display_with_symbols(ty, ctx.symbol_interner)
+    //                     )))
+    //                 .finish(),
+    //         );
+    //     }
+    // }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct IntValue {
+    pub value: u128,
+}
+
+impl IntValue {
+    pub fn fits(&self, ty: Ty, ty_interner: &TyInterner) -> bool {
+        use crate::types::Primitive::*;
+
+        match ty_interner.kind(ty) {
+            TyKind::Primitive(I8) => self.value <= i8::MAX as u128,
+            TyKind::Primitive(I16) => self.value <= i16::MAX as u128,
+            TyKind::Primitive(I32) => self.value <= i32::MAX as u128,
+            TyKind::Primitive(I64) => self.value <= i64::MAX as u128,
+            TyKind::Primitive(I128) => true,
+
+            TyKind::Primitive(U8) => self.value <= u8::MAX as u128,
+            TyKind::Primitive(U16) => self.value <= u16::MAX as u128,
+            TyKind::Primitive(U32) => self.value <= u32::MAX as u128,
+            TyKind::Primitive(U64) => self.value <= u64::MAX as u128,
+            TyKind::Primitive(U128) => true,
+
+            _ => false,
         }
     }
+}
 
-    fn check_literal_fits_float(&self, ctx: &mut TypeCkCtx, value: f64, ty: Ty, span: &Span) {
-        let fits = match ctx.ty_interner.kind(ty) {
-            TyKind::Primitive(F32) => value < f32::MIN as f64 || value > f32::MAX as f64,
-            TyKind::Primitive(F64) => value < f64::MIN || value > f64::MAX,
-            _ => false
-        };
+#[derive(Copy, Clone, Debug)]
+pub struct FloatValue {
+    pub value: f64,
+}
 
-        if !fits {
-            ctx.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::TypeOverflow { value: Literal::Float(value), ty },
-                    span.clone(),
-                )
-                .build(),
-            );
+impl FloatValue {
+    pub fn fits(&self, ty: Ty, ty_interner: &TyInterner) -> bool {
+        use crate::types::Primitive::*;
+
+        match ty_interner.kind(ty) {
+            TyKind::Primitive(F32) => {
+                self.value >= f32::MIN as f64 && self.value <= f32::MAX as f64
+            }
+            TyKind::Primitive(F64) => true,
+            _ => false,
         }
     }
 }

@@ -1,43 +1,51 @@
-use super::token::{ Keyword, Span, Token, TokenKind };
-use crate::diagnostics::{ DiagnosticBuilder, DiagnosticKind };
-use crate::{file, Compiler};
+use super::token::{Keyword, Token, TokenKind};
+use crate::reports::{Label, Report, ReportKind};
+use crate::source::Span;
+use crate::Compiler;
 
-#[derive(Clone)]
 pub struct Lexer<'a> {
-    input: Vec<u8>,
-    position: usize,
-    compiler: &'a Compiler,
+    compiler: &'a mut Compiler,
+    file_id: usize,
+    pos: usize,
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(compiler: &'a Compiler) -> Self {
+    pub fn new(compiler: &'a mut Compiler, file_id: usize) -> Self {
         Self {
-            input: file::content(),
-            position: 0,
-            compiler
+            compiler,
+            file_id,
+            pos: 0,
         }
+    }
+
+    fn file(&self) -> &crate::source::SourceFile {
+        self.compiler.sourcemap.file(self.file_id)
+    }
+
+    fn input(&self) -> &[u8] {
+        self.file().text.as_bytes()
     }
 
     fn create_token(&mut self, kind: TokenKind, start: usize, end: usize) -> Token {
         Token {
             kind,
-            span: Span::new(start, end),
+            span: Span::new(start, end, self.file_id),
         }
     }
 
     fn peek(&self, n: usize) -> Option<u8> {
-        self.input.get(self.position + n).copied()
+        self.input().get(self.pos + n).copied()
     }
 
     fn advance(&mut self, n: usize) {
-        self.position += n;
+        self.pos += n;
     }
 
     fn advance_until(&mut self, pattern: &[u8]) {
         let pat_len = pattern.len();
 
-        while self.position + pat_len <= self.input.len() {
-            if &self.input[self.position..self.position + pat_len] == pattern {
+        while self.pos + pat_len <= self.input().len() {
+            if &self.input()[self.pos..self.pos + pat_len] == pattern {
                 self.advance(pat_len);
                 return;
             }
@@ -47,7 +55,7 @@ impl<'a> Lexer<'a> {
 
     pub fn next_token(&mut self) -> Token {
         self.skip_whitespace();
-        let start = self.position;
+        let start = self.pos;
 
         let (kind, len) = match self.peek(0) {
             // raw string r"..."
@@ -125,17 +133,6 @@ impl<'a> Lexer<'a> {
                 _ => (TokenKind::RAngle, 1),
             },
             Some(b'!') => match self.peek(1) {
-                Some(b'!') => {
-                    let span = Span::new(self.position, self.position + 2);
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(DiagnosticKind::UnknownCharacter, span.clone())
-                            .label(span.clone(), "Double exclamation mark is not allowed!")
-                            .note("Did you mean to use a single exclamation mark? Or wrap the inner expression in parentheses.")
-                            .build(),
-                    );
-                    self.advance(1);
-                    return self.create_token(TokenKind::Error, span.start, span.end);
-                }
                 Some(b'=') => (TokenKind::ExclamationEquals, 2),
                 _ => (TokenKind::Exclamation, 1),
             },
@@ -154,11 +151,11 @@ impl<'a> Lexer<'a> {
             Some(c) if (c as char).is_numeric() => self.read_number(),
 
             Some(_) => {
-                let span = Span::new(self.position, self.position + 1);
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(DiagnosticKind::UnknownCharacter, span.clone())
-                        .label(span.clone(), "Unknown character!")
-                        .build(),
+                let span = Span::new(self.pos, self.pos + 1, self.file_id);
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_label(Label::new(span).with_message("unknown or non ascii character"))
+                        .finish(),
                 );
                 self.advance(1);
                 return self.create_token(TokenKind::Error, span.start, span.end);
@@ -168,11 +165,11 @@ impl<'a> Lexer<'a> {
         };
 
         self.advance(len);
-        self.create_token(kind, start, self.position)
+        self.create_token(kind, start, self.pos)
     }
 
     fn skip_whitespace(&mut self) {
-        while let Some(&c) = self.input.get(self.position) {
+        while let Some(&c) = self.input().get(self.pos) {
             if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
                 self.advance(1);
             } else {
@@ -187,12 +184,15 @@ impl<'a> Lexer<'a> {
         // First character must be a letter
         if let Some(c) = self.peek(0) {
             if !(c as char).is_ascii_alphabetic() && c != b'_' {
-                let span = Span::new(self.position, self.position + 1);
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(DiagnosticKind::InvalidCharacter, span.clone())
-                        .label(span, "Identifier must start with a letter or underscore")
-                        .build(),
-                )
+                let span = Span::new(self.pos, self.pos + 1, self.file_id);
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message("invalid identifier start")
+                        .with_label(
+                            Label::new(span).with_message("must start with a letter or underscore"),
+                        )
+                        .finish(),
+                );
             }
         }
 
@@ -204,7 +204,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let raw: String = self.input[self.position..self.position + i]
+        let raw: String = self.input()[self.pos..self.pos + i]
             .iter()
             .map(|&b| b as char)
             .collect();
@@ -234,32 +234,201 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_number(&mut self) -> (TokenKind, usize) {
-        if self.peek(0) == Some(b'0') && matches!(self.peek(1), Some(b'x') | Some(b'X')) {
-            // self.advance(2);
-            return self.read_hex_integer();
+        if self.peek(0) == Some(b'0') {
+            match self.peek(1) {
+                Some(b'x') | Some(b'X') => return self.read_radix_integer(16, 2),
+                Some(b'o') | Some(b'O') => return self.read_radix_integer(8, 2),
+                Some(b'b') | Some(b'B') => return self.read_radix_integer(2, 2),
+                _ => {}
+            }
         }
+
         self.read_decimal_or_scientific()
     }
 
-    fn read_hex_integer(&mut self) -> (TokenKind, usize) {
-        let mut i = 2;
+    fn read_radix_integer(&mut self, radix: u32, prefix_len: usize) -> (TokenKind, usize) {
+        let start = self.pos;
+        let mut i = prefix_len;
+        let mut saw_digit = false;
+        let mut invalid_found = false;
+
+        let mut first_digit_index: Option<usize> = None;
+        let mut last_digit_index: Option<usize> = None;
+
+        let mut underscore_positions = Vec::new(); // alle `_` speichern
+
         while let Some(c) = self.peek(i) {
-            if (c as char).is_digit(16) {
+            let ch = c as char;
+
+            if ch == '_' {
+                underscore_positions.push(i);
                 i += 1;
-            } else {
-                break;
+                continue;
+            }
+
+            if ch.is_ascii_alphanumeric() {
+                if ch.is_digit(radix) {
+                    if first_digit_index.is_none() {
+                        first_digit_index = Some(i);
+                    }
+                    last_digit_index = Some(i);
+                } else {
+                    invalid_found = true;
+                }
+                saw_digit = true;
+                i += 1;
+                continue;
+            }
+
+            break;
+        }
+
+        // ---------- WARNINGS ----------
+        if let Some(first) = first_digit_index {
+            if let Some(last) = last_digit_index {
+                // Prefix underscores (zwischen Prefix und erster Ziffer)
+                let leading_us: Vec<_> = underscore_positions
+                    .iter()
+                    .copied()
+                    .filter(|&pos| pos < first)
+                    .collect();
+                if !leading_us.is_empty() {
+                    let span = Span::new(
+                        start + leading_us[0],
+                        start + leading_us[leading_us.len() - 1] + 1,
+                        self.file_id,
+                    );
+
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Warning, span)
+                            .with_message("underscore directly after base prefix")
+                            .with_label(Label::new(span))
+                            .with_help("consider: remove")
+                            .finish(),
+                    );
+                }
+
+                // Trailing underscores (nach letzter Ziffer)
+                let trailing_us: Vec<_> = underscore_positions
+                    .iter()
+                    .copied()
+                    .filter(|&pos| pos > last)
+                    .collect();
+                if !trailing_us.is_empty() {
+                    let span = Span::new(
+                        start + trailing_us[0],
+                        start + trailing_us[trailing_us.len() - 1] + 1,
+                        self.file_id,
+                    );
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Warning, span)
+                            .with_message("trailing underscore in number literal")
+                            .with_label(Label::new(span))
+                            .with_help("consider: remove")
+                            .finish(),
+                    );
+                }
+
+                // Mittlere underscores zwischen erster und letzter Ziffer
+                let middle_us: Vec<_> = underscore_positions
+                    .iter()
+                    .copied()
+                    .filter(|&p| p > first && p < last)
+                    .collect();
+
+                let mut groups = Vec::new();
+                let mut group_start: Option<usize> = None;
+                let mut prev: Option<usize> = None;
+
+                for pos in middle_us {
+                    if let Some(prev_pos) = prev {
+                        if pos == prev_pos + 1 {
+                            // fortlaufende Gruppe
+                        } else {
+                            // Gruppe endet
+                            if let Some(start) = group_start {
+                                groups.push((start, prev_pos));
+                            }
+                            group_start = Some(pos);
+                        }
+                    } else {
+                        group_start = Some(pos);
+                    }
+                    prev = Some(pos);
+                }
+
+                // letzte Gruppe prüfen
+                if let (Some(start), Some(end)) = (group_start, prev) {
+                    groups.push((start, end));
+                }
+
+                let mut labels: Vec<Label<Span>> = Vec::new();
+
+                for (_, (s, e)) in groups.iter().enumerate() {
+                    if e - s >= 1 {
+                        let span = Span::new(start + s, start + e + 1, self.file_id);
+
+                        labels.push(Label::new(span));
+                    }
+                }
+
+                if !labels.is_empty() {
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Warning, labels[0].span)
+                            .with_message("multiple consecutive underscores in number literal")
+                            .with_labels(labels)
+                            .with_help("consider: remove or reduce to one underscore")
+                            .finish(),
+                    );
+                }
             }
         }
-        let raw: String = self.input[self.position..self.position + i]
-            .iter()
-            .map(|&b| b as char)
-            .collect();
-        let value = u128::from_str_radix(&raw, 16).unwrap();
-        (TokenKind::Integer(value), i)
+
+        // ---------- ERRORS ----------
+        if !saw_digit {
+            let span = Span::new(start, start + i, self.file_id);
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, span)
+                    .with_message("non-supported digit(s) found in numeric literal")
+                    .with_label(Label::new(span).with_message("non-supported digit(s)"))
+                    .finish(),
+            );
+            return (TokenKind::Error, i);
+        }
+
+        if invalid_found {
+            let span = Span::new(start, start + i, self.file_id);
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, span)
+                    .with_message("invalid digit(s) in literal")
+                    .with_label(Label::new(span).with_message("invalid digit(s)"))
+                    .finish(),
+            );
+            return (TokenKind::Error, i);
+        }
+
+        // ---------- PARSE ----------
+        let raw = &self.input()[start + prefix_len..start + i];
+        let mut text: String = raw.iter().map(|&b| b as char).collect();
+        text.retain(|c| c != '_');
+
+        match u128::from_str_radix(&text, radix) {
+            Ok(v) => (TokenKind::Integer(v), i),
+            Err(_) => {
+                let span = Span::new(start, start + i, self.file_id);
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message("digits not storable")
+                        .with_label(Label::new(span).with_message("this number is too big"))
+                        .finish(),
+                );
+                (TokenKind::Error, i)
+            }
+        }
     }
 
     fn read_decimal_or_scientific(&mut self) -> (TokenKind, usize) {
-        let start = self.position;
+        let start = self.pos;
         let mut i = 0;
         let mut has_dot = false;
 
@@ -280,18 +449,19 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let raw = &self.input[start..start + i];
+        let raw = &self.input()[start..start + i];
         let text: String = raw.iter().map(|&b| b as char).collect();
 
         if has_dot || text.contains('e') || text.contains('E') {
             match text.parse::<f64>() {
                 Ok(v) => (TokenKind::Float(v), i),
                 Err(_) => {
-                    let span = Span::new(start, start + i);
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                            .label(span, "Invalid floating-point literal!")
-                            .build(),
+                    let span = Span::new(start, start + i, self.file_id);
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, span)
+                            .with_message("invalid floating-point literal")
+                            .with_label(Label::new(span).with_message("not parsable as float"))
+                            .finish(),
                     );
                     (TokenKind::Error, i)
                 }
@@ -300,11 +470,12 @@ impl<'a> Lexer<'a> {
             match text.parse::<u128>() {
                 Ok(v) => (TokenKind::Integer(v), i),
                 Err(_) => {
-                    let span = Span::new(start, start + i);
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                            .label(span, "Invalid integer literal!")
-                            .build(),
+                    let span = Span::new(start, start + i, self.file_id);
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, span)
+                            .with_message("invalid integer literal")
+                            .with_label(Label::new(span).with_message("not parsable as integer"))
+                            .finish(),
                     );
                     (TokenKind::Error, i)
                 }
@@ -313,7 +484,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_char(&mut self) -> (TokenKind, usize) {
-        let start = self.position;
+        let start = self.pos;
         let mut i = 1; // skip opening '
 
         let c = match self.peek(i) {
@@ -329,14 +500,12 @@ impl<'a> Lexer<'a> {
                     Some(other) => other as char, // unknown escape, interpret as literal
                     None => {
                         // EOF nach \
-                        let span = Span::new(start, start + i);
-                        self.compiler.diagnostics.push(
-                            DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                                .label(
-                                    span.clone(),
-                                    "unterminated or invalid escape in char literal",
-                                )
-                                .build(),
+                        let span = Span::new(start, start + i, self.file_id);
+                        self.compiler.reports.push(
+                            Report::build(ReportKind::Error, span)
+                                .with_message("unterminated or invalid escape in char literal")
+                                .with_label(Label::new(span))
+                                .finish(),
                         );
                         return (TokenKind::Error, i);
                     }
@@ -345,11 +514,12 @@ impl<'a> Lexer<'a> {
             Some(byte) => byte as char,
             None => {
                 // EOF direkt nach '
-                let span = Span::new(start, start + i);
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                        .label(span.clone(), "unterminated char literal")
-                        .build(),
+                let span = Span::new(start, start + i, self.file_id);
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message("unvalid char literal")
+                        .with_label(Label::new(span).with_message("not parsable as char (u8)"))
+                        .finish(),
                 );
                 return (TokenKind::Error, i);
             }
@@ -362,18 +532,19 @@ impl<'a> Lexer<'a> {
             i += 1;
             (TokenKind::Char(c), i)
         } else {
-            let span = Span::new(start, start + i);
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                    .label(span.clone(), "unterminated char literal")
-                    .build(),
+            let span = Span::new(start, start + i, self.file_id);
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, span)
+                    .with_message("unterminated char literal")
+                    .with_label(Label::new(span))
+                    .finish(),
             );
             (TokenKind::Error, i)
         }
     }
 
     fn read_byte_char(&mut self) -> (TokenKind, usize) {
-        let start = self.position;
+        let start = self.pos;
         let mut i = 2; // b'
 
         let value = match self.peek(i) {
@@ -403,18 +574,19 @@ impl<'a> Lexer<'a> {
             return (TokenKind::Byte(value), i);
         }
 
-        let span = Span::new(start, start + i);
-        self.compiler.diagnostics.push(
-            DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                .label(span, "invalid byte char literal")
-                .build(),
+        let span = Span::new(start, start + i, self.file_id);
+        self.compiler.reports.push(
+            Report::build(ReportKind::Error, span)
+                .with_message("invalid byte char literal")
+                .with_label(Label::new(span))
+                .finish(),
         );
 
         (TokenKind::Error, i)
     }
 
     fn read_string(&mut self) -> (TokenKind, usize) {
-        let start = self.position;
+        let start = self.pos;
         let mut i = 1;
         let mut result = String::new();
 
@@ -451,18 +623,19 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let span = Span::new(start, start + i);
-        self.compiler.diagnostics.push(
-            DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                .label(span, "unterminated string literal")
-                .build(),
+        let span = Span::new(start, start + i, self.file_id);
+        self.compiler.reports.push(
+            Report::build(ReportKind::Error, span)
+                .with_message("unterminated string literal")
+                .with_label(Label::new(span))
+                .finish(),
         );
 
         (TokenKind::Error, i)
     }
 
     fn read_raw_string(&mut self) -> (TokenKind, usize) {
-        let start = self.position;
+        let start = self.pos;
         let mut i = 2; // r"
 
         let mut result = String::new();
@@ -485,18 +658,19 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let span = Span::new(start, start + i);
-        self.compiler.diagnostics.push(
-            DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                .label(span, "unterminated raw string literal")
-                .build(),
+        let span = Span::new(start, start + i, self.file_id);
+        self.compiler.reports.push(
+            Report::build(ReportKind::Error, span)
+                .with_message("unterminated string literal")
+                .with_label(Label::new(span))
+                .finish(),
         );
 
         (TokenKind::Error, i)
     }
 
     fn read_byte_string(&mut self) -> (TokenKind, usize) {
-        let start = self.position;
+        let start = self.pos;
         let mut i = 2; // b"
         let mut bytes = Vec::new();
 
@@ -533,18 +707,19 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let span = Span::new(start, start + i);
-        self.compiler.diagnostics.push(
-            DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                .label(span, "unterminated byte string literal")
-                .build(),
+        let span = Span::new(start, start + i, self.file_id);
+        self.compiler.reports.push(
+            Report::build(ReportKind::Error, span)
+                .with_message("unterminated string literal")
+                .with_label(Label::new(span))
+                .finish(),
         );
 
         (TokenKind::Error, i)
     }
 
     fn read_raw_byte_string(&mut self) -> (TokenKind, usize) {
-        let start = self.position;
+        let start = self.pos;
         let mut i = 4; // br#"
         let mut bytes = Vec::new();
 
@@ -557,11 +732,12 @@ impl<'a> Lexer<'a> {
             i += 1;
         }
 
-        let span = Span::new(start, start + i);
-        self.compiler.diagnostics.push(
-            DiagnosticBuilder::error(DiagnosticKind::InvalidValue, span.clone())
-                .label(span, "unterminated raw byte string literal")
-                .build(),
+        let span = Span::new(start, start + i, self.file_id);
+        self.compiler.reports.push(
+            Report::build(ReportKind::Error, span)
+                .with_message("unterminated string literal")
+                .with_label(Label::new(span))
+                .finish(),
         );
 
         (TokenKind::Error, i)

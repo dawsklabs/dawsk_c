@@ -1,123 +1,97 @@
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 
 use super::scope::Symbol;
-use super::token::{Keyword, Span, Token, TokenKind};
-use super::types::{Primitive, Ty, TyKind};
+use super::token::{Keyword, Token, TokenKind};
 use super::{
-    ASTBinaryOperator, ASTBinaryOperatorKind, ASTExpr, ASTStmt, ASTStructField, ASTUnaryOperator,
-    ASTUnaryOperatorKind,
+    ASTBinaryOperator, ASTBinaryOperatorKind, ASTExpr, ASTStmt, ASTStructField,
+    ASTTupleStructField, ASTUnaryOperator, ASTUnaryOperatorKind,
 };
+use crate::reports::{Label, Report, ReportKind};
+use crate::types::{Primitive, Ty, TyKind};
 
+use crate::source::Span;
 use crate::{abort, Compiler};
-use crate::diagnostics::{ DiagnosticBuilder, DiagnosticKind };
-
-use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
-pub struct Counter {
-    index: Cell<usize>,
-}
-
-impl Counter {
-    pub fn new() -> Self {
-        Self {
-            index: Cell::new(0),
-        }
-    }
-
-    pub fn incr(&self, n: usize) {
-        self.index.set(self.index.get() + n);
-    }
-
-    pub fn get(&self) -> usize {
-        self.index.get()
-    }
-}
-
 pub struct Parser<'a> {
-    tokens: Vec<Token>,
-    index: Counter,
-    pushed_back: RefCell<VecDeque<Token>>,
-    compiler: &'a mut Compiler
+    tokens: &'a [Token],
+    index: usize,
+    pushed_back: VecDeque<Token>,
+    compiler: &'a mut Compiler,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(
-        tokens: Vec<Token>,
-        compiler: &'a mut Compiler,
-    ) -> Self {
+    pub fn new(tokens: &'a [Token], compiler: &'a mut Compiler) -> Self {
         Self {
             tokens,
-            index: Counter::new(),
-            pushed_back: RefCell::new(VecDeque::new()),
+            index: 0,
+            pushed_back: VecDeque::new(),
             compiler,
         }
     }
 
     pub fn peek(&self, offset: isize) -> Token {
         if offset == 0 {
-            if let Some(tok) = self.pushed_back.borrow().front() {
+            if let Some(tok) = self.pushed_back.front() {
                 return tok.clone();
             }
         }
 
-        let base = self.index.get() as isize + offset - self.pushed_back.borrow().len() as isize;
+        let base = self.index as isize + offset - self.pushed_back.len() as isize;
 
         let idx = base.clamp(0, (self.tokens.len() - 1) as isize) as usize;
         self.tokens[idx].clone()
     }
 
-    pub fn advance(&self, n: usize) {
-        self.index.incr(n);
+    pub fn advance(&mut self, n: usize) {
+        self.index += n;
     }
 
-    pub fn consume(&self) -> Token {
+    pub fn consume(&mut self) -> Token {
         if abort::is_aborted() {
             return Token {
                 kind: TokenKind::EOF,
-                span: Span { start: 0, end: 0 },
+                span: self
+                    .tokens
+                    .last()
+                    .map(|t| t.span)
+                    .unwrap_or(Span::new(0, 0, 0)),
             };
         }
 
-        if let Some(tok) = self.pushed_back.borrow_mut().pop_front() {
+        if let Some(tok) = self.pushed_back.pop_front() {
             return tok;
         }
 
-        self.index.incr(1);
+        self.index += 1;
         self.peek(-1)
     }
 
-    pub fn consume_check(&self, expected: TokenKind) -> Token {
+    pub fn consume_check(&mut self, expected: TokenKind) -> Token {
         let token = self.consume();
         if token.kind != expected {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::UnexpectedToken {
-                        given: token.kind.clone(),
-                    },
-                    token.span.clone(),
-                )
-                .build(),
-            )
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, token.span)
+                    .with_message("unexpected token")
+                    .with_label(Label::new(token.span).with_message("found here"))
+                    .finish(),
+            );
         }
         token
     }
 
-    fn push_back(&self, token: Token) {
-        self.pushed_back.borrow_mut().push_front(token);
+    fn push_back(&mut self, token: Token) {
+        self.pushed_back.push_front(token);
     }
 
-    pub fn check_whitespace(&self, starter: Span, next: Span) {
+    pub fn check_whitespace(&mut self, starter: Span, next: Span) {
         if next.start != starter.end {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::UnexpectedWhitespace,
-                    Span {
-                        start: starter.end,
-                        end: next.start,
-                    },
-                )
-                .build(),
+            let span = Span::merge(starter, next);
+            self.compiler.reports.push(
+                Report::build(ReportKind::Warning, span)
+                    .with_message("unexpected whitespace")
+                    .with_label(Label::new(span))
+                    .finish(),
             );
         }
     }
@@ -143,19 +117,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> ASTStmt {
-        let token = self.peek(0);
-        if let TokenKind::Unknown(_) = &token.kind {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::UnexpectedToken {
-                        given: token.kind.clone(),
-                    },
-                    self.peek(0).span,
-                )
-                .build(),
-            );
-        }
-
         match self.peek(0).kind {
             TokenKind::Keyword(Keyword::Dec) => self.parse_declare_stmt(),
             _ => self.parse_expr_stmt(),
@@ -194,10 +155,8 @@ impl<'a> Parser<'a> {
         self.consume_check(TokenKind::RCurly);
         self.compiler.scopes.pop();
 
-        let start = curly.span.start;
-        let end = self.peek(-1).span.end;
-
-        ASTExpr::block(stmts, tail_expr, Span { start, end })
+        let span = Span::merge(curly.span, self.peek(-1).span);
+        ASTExpr::block(stmts, tail_expr, span)
     }
 
     fn parse_declare_stmt(&mut self) -> ASTStmt {
@@ -211,10 +170,84 @@ impl<'a> Parser<'a> {
                 // TokenKind::Keyword(Keyword::Trait) => self.parse_trait_declaration(),
                 // TokenKind::Keyword(Keyword::Type) => self.parse_type_declaration(),
                 // TokenKind::Keyword(Keyword::Const) => self.parse_const_declaration(),
-                _ => panic!("Unexpected token after 'dec'"),
+                _ => unreachable!(),
             }
         } else {
             self.parse_var_declaration()
+        }
+    }
+
+    fn parse_optional_token(&mut self, kind: TokenKind) -> bool {
+        if self.peek(0).kind == kind {
+            self.advance(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_identifier(&mut self) -> Token {
+        let tok = self.consume();
+        if !matches!(tok.kind, TokenKind::Identifier(_)) {
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, tok.span)
+                    .with_message("expected identifier")
+                    .with_label(Label::new(tok.span).with_message("expected IDENTIFIER"))
+                    .finish(),
+            );
+        }
+        tok
+    }
+
+    fn parse_struct_field(&mut self) -> ASTStructField {
+        let pub_ = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
+
+        // name
+        let identifier = self.parse_identifier();
+
+        // :
+        self.consume_check(TokenKind::Colon);
+
+        // type
+        let type_ = self.parse_type();
+
+        self.parse_field_end(TokenKind::RCurly);
+
+        ASTStructField {
+            identifier,
+            pub_,
+            type_,
+        }
+    }
+
+    fn parse_tuple_struct_field(&mut self) -> ASTTupleStructField {
+        let pub_ = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
+
+        // type
+        let type_ = self.parse_type();
+
+        self.parse_field_end(TokenKind::RParen);
+
+        ASTTupleStructField { pub_, type_ }
+    }
+
+    fn parse_field_end(&mut self, end: TokenKind) {
+        match self.peek(0).kind {
+            TokenKind::Comma => {
+                self.advance(1);
+            }
+            k if k == end => {
+                // ok, letztes Feld
+            }
+            _ => {
+                let span = self.peek(0).span;
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message("unexpected token")
+                        .with_label(Label::new(span).with_message("expected COLON"))
+                        .finish(),
+                );
+            }
         }
     }
 
@@ -224,45 +257,26 @@ impl<'a> Parser<'a> {
         self.consume_check(TokenKind::Keyword(Keyword::Struct));
         self.consume_check(TokenKind::RParen);
 
-        // optional pub
-        let public = if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
-            self.advance(1);
-            true
-        } else {
-            false
-        };
+        let public = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
+        let identifier = self.parse_identifier();
 
-        // Struct-Name
-        let identifier = self.consume();
-        if !matches!(identifier.kind, TokenKind::Identifier(_)) {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::ExpectedToken {
-                        expected: vec!["Identifier".into()],
-                    },
-                    self.peek(0).span,
-                )
-                .build(),
-            );
-        }
-
-        // optionale Generics: <T, U>
+        // optional generics: <T, U>
         let generics = if self.peek(0).kind == TokenKind::LAngle {
             self.check_whitespace(identifier.span.clone(), self.peek(0).span.clone());
 
             let args = self.parse_generic_args();
 
-            // Prüfe Whitespace zwischen '>' und '('
+            // checkwhitespace between  '>' and '('
             if self.peek(0).kind == TokenKind::LParen {
                 self.check_whitespace(
-                    self.tokens[self.index.get() - 1].span.clone(),
+                    self.tokens[self.index - 1].span.clone(),
                     self.peek(0).span.clone(),
                 );
             }
 
-            Some(args)
+            args
         } else {
-            None
+            Box::new([])
         };
 
         if self.peek(0).kind == TokenKind::LCurly {
@@ -270,10 +284,7 @@ impl<'a> Parser<'a> {
             self.advance(1);
 
             // Fields
-            let mut fields = Vec::new();
-            while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
-                fields.push(self.parse_struct_field());
-            }
+            let fields = self.parse_fields(TokenKind::RCurly, Self::parse_struct_field);
 
             // }
             self.consume_check(TokenKind::RCurly);
@@ -283,12 +294,11 @@ impl<'a> Parser<'a> {
                 self.advance(1);
             } else {
                 let span = self.peek(0).span.clone();
-
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(DiagnosticKind::MissingSemicolon, span.clone())
-                        .label(span.clone(), "expected `;` here")
-                        .suggestion(span, ";", "add a semicolon")
-                        .build(),
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message("missing semicolon")
+                        .with_label(Label::new(span).with_message("expected SEMICOLON"))
+                        .finish(),
                 );
             }
 
@@ -298,39 +308,7 @@ impl<'a> Parser<'a> {
             self.consume_check(TokenKind::LParen);
 
             // Fields
-            let mut fields = SmallVec::new();
-            if self.peek(0).kind != TokenKind::RParen {
-                loop {
-                    fields.push(self.parse_type());
-
-                    match self.peek(0).kind {
-                        TokenKind::Comma => {
-                            self.advance(1);
-
-                            // trailing comma erlaubt
-                            if self.peek(0).kind == TokenKind::RParen {
-                                break;
-                            }
-                        }
-                        TokenKind::RParen => break,
-                        _ => {
-                            self.compiler.diagnostics.push(
-                                DiagnosticBuilder::error(
-                                    DiagnosticKind::ExpectedToken {
-                                        expected: vec![
-                                            "Closing/Right Parenthesis ')'".into(),
-                                            "Comma ','".into(),
-                                        ],
-                                    },
-                                    self.peek(0).span,
-                                )
-                                .build(),
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
+            let fields = self.parse_fields(TokenKind::RParen, Self::parse_tuple_struct_field);
 
             // )
             self.consume_check(TokenKind::RParen);
@@ -339,14 +317,12 @@ impl<'a> Parser<'a> {
             if self.peek(0).kind == TokenKind::Semicolon {
                 self.advance(1);
             } else {
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(
-                        DiagnosticKind::ExpectedToken {
-                            expected: vec!["Colon ':'".into()],
-                        },
-                        self.peek(0).span,
-                    )
-                    .build(),
+                let span = self.peek(0).span;
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message("unexpected token")
+                        .with_label(Label::new(span).with_message("expected COLON"))
+                        .finish(),
                 );
             }
 
@@ -354,109 +330,53 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_struct_field(&mut self) -> ASTStructField {
-        // optional pub
-        let pub_ = if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
-            self.advance(1);
-            true
-        } else {
-            false
-        };
+    fn parse_fields<F, T>(&mut self, end: TokenKind, parse_field: F) -> Box<[T]>
+    where
+        F: Fn(&mut Self) -> T,
+    {
+        let mut fields = Vec::new();
 
-        // Feldname
-        let identifier = self.consume();
-        if !matches!(identifier.kind, TokenKind::Identifier(_)) {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::ExpectedToken {
-                        expected: vec!["Identifier".into()],
-                    },
-                    self.peek(0).span,
-                )
-                .build(),
-            );
+        while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EOF {
+            fields.push(parse_field(self));
         }
 
-        // :
-        self.consume_check(TokenKind::Colon);
-
-        // Typ
-        let type_ = self.parse_type();
-
-        // ,
-        match self.peek(0).kind {
-            TokenKind::Comma => {
-                self.advance(1);
-            }
-            TokenKind::RCurly => {
-                // ok: letztes Feld ohne Komma
-            }
-            _ => {
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(
-                        DiagnosticKind::ExpectedToken {
-                            expected: vec!["Comma ','".into()],
-                        },
-                        self.peek(0).span,
-                    )
-                    .build(),
-                );
-            }
-        }
-
-        ASTStructField {
-            identifier,
-            pub_,
-            type_,
-        }
+        fields.into_boxed_slice()
     }
 
     fn parse_var_declaration(&mut self) -> ASTStmt {
-        let mut public = false;
-        let mut mutable = false;
-
-        if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
-            // pub (gr.: public)
-            public = true;
-            self.advance(1);
-        }
-
-        if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
-            mutable = true;
-            self.advance(1);
-        }
+        let public = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
+        let mutable = self.parse_optional_token(TokenKind::Keyword(Keyword::Mut));
 
         // identifier: consume and validate
         let identifier_token = self.consume();
         match &identifier_token.kind.clone() {
             TokenKind::Identifier(name) => {
                 let sym_id_pre = self.compiler.name_interner.intern(&name);
-                let sym_id_opt = {
-                    self.compiler.scopes.lookup_current(sym_id_pre)
-                };
+                let sym_id_opt = { self.compiler.scopes.lookup_current(sym_id_pre) };
 
                 if let Some(sym_id) = sym_id_opt {
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::AlreadyDefined {
-                                name: name.to_string(),
-                            },
-                            identifier_token.span.clone(),
-                        )
-                        .help(self.compiler.scopes.symbol_span(sym_id), "Already defined here!")
-                        .build(),
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, identifier_token.span)
+                            .with_message("already defined")
+                            .with_label(
+                                Label::new(identifier_token.span).with_message("redefined here"),
+                            )
+                            .with_label(
+                                Label::new(self.compiler.scopes.symbol_span(sym_id))
+                                    .with_message("defined here"),
+                            )
+                            .finish(),
                     );
                 }
             }
             _ => {
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(
-                        DiagnosticKind::UnexpectedToken {
-                            given: identifier_token.kind.clone(),
-                        },
-                        identifier_token.span.clone(),
-                    )
-                    .build(),
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, identifier_token.span)
+                        .with_message("unexpected token")
+                        .with_label(
+                            Label::new(identifier_token.span).with_message("expected IDENTIFIER"),
+                        )
+                        .finish(),
                 );
             }
         }
@@ -475,14 +395,12 @@ impl<'a> Parser<'a> {
 
         // require '='
         if self.peek(0).kind != TokenKind::Equals {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::ExpectedToken {
-                        expected: vec!["Equals '='".to_string()],
-                    },
-                    self.peek(0).span.clone(),
-                )
-                .build(),
+            let span = self.peek(0).span;
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, span)
+                    .with_message("unexpected token")
+                    .with_label(Label::new(span).with_message("expected EQUALS"))
+                    .finish(),
             );
             self.advance(1);
         } else {
@@ -497,20 +415,18 @@ impl<'a> Parser<'a> {
 
         // Semicolon required here
         if self.peek(0).kind != TokenKind::Semicolon {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::ExpectedToken {
-                        expected: vec!["Semicolon ';'".to_string()],
-                    },
-                    self.peek(0).span.clone(),
-                )
-                .build(),
+            let span = self.peek(0).span;
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, span)
+                    .with_message("unexpected token")
+                    .with_label(Label::new(span).with_message("expected SEMICOLON"))
+                    .finish(),
             );
         } else {
             self.advance(1); // consume ';'
         }
 
-        let _ = self.compiler.scopes.define(Symbol {
+        let _ = self.compiler.scopes.define_symbol(Symbol {
             name: self.compiler.name_interner.intern(ident_name),
             type_: type_
                 .clone()
@@ -534,19 +450,22 @@ impl<'a> Parser<'a> {
             let name = match *self.compiler.ty_interner.kind(ty) {
                 TyKind::Custom(n) => n,
                 _ => {
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::InvalidGenericBase,
-                            self.peek(-1).span.clone(),
-                        )
-                        .build(),
+                    let span = self.peek(-1).span;
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, span)
+                            .with_message("invalid generic base")
+                            .with_label(Label::new(span).with_message("expected IDENTIFIER"))
+                            .finish(),
                     );
                     self.compiler.symbol_interner.intern("__ERROR".into())
                 }
             };
 
             let args = self.parse_generic_args();
-            return self.compiler.ty_interner.intern(TyKind::Generic { base: name, args });
+            return self
+                .compiler
+                .ty_interner
+                .intern(TyKind::Generic { base: name, args });
         }
 
         ty
@@ -594,13 +513,13 @@ impl<'a> Parser<'a> {
                     _ => None,
                 };
 
-                self.compiler.ty_interner
+                self.compiler
+                    .ty_interner
                     .intern(prim.map(TyKind::Primitive).unwrap_or_else(|| {
                         // Leak the string once to get a 'static reference
                         let static_name: &'static str = name;
                         TyKind::Custom(self.compiler.symbol_interner.intern(static_name.into()))
-                    }
-                ))
+                    }))
             }
 
             TokenKind::LParen => {
@@ -623,23 +542,22 @@ impl<'a> Parser<'a> {
             }
 
             _ => {
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(
-                        DiagnosticKind::ExpectedToken {
-                            expected: vec!["Type".into()],
-                        },
-                        token.span,
-                    )
-                    .build(),
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, token.span)
+                        .with_message("unexpected token")
+                        .with_label(Label::new(token.span).with_message("expected TYPE"))
+                        .finish(),
                 );
-                self.compiler.ty_interner.intern(TyKind::Custom(self.compiler.symbol_interner.intern("__ERROR")))
+                self.compiler.ty_interner.intern(TyKind::Custom(
+                    self.compiler.symbol_interner.intern("__ERROR"),
+                ))
             }
         }
     }
 
-    fn parse_generic_args(&mut self) -> SmallVec<[Ty; 2]> {
+    fn parse_generic_args(&mut self) -> Box<[Ty]> {
         self.consume_check(TokenKind::LAngle);
-        let mut elems = smallvec![];
+        let mut elems: SmallVec<[Ty; 2]> = smallvec![];
 
         loop {
             elems.push(self.parse_type());
@@ -659,26 +577,28 @@ impl<'a> Parser<'a> {
                         span: Span {
                             start: tok.span.start + 1,
                             end: tok.span.end,
+                            file_id: tok.span.file_id,
                         },
                     });
                     break;
                 }
                 _ => {
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::ExpectedToken {
-                                expected: vec![">".into()],
-                            },
-                            self.peek(0).span.clone(),
-                        )
-                        .build(),
+                    let span = self.peek(0).span;
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, span)
+                            .with_message("unexpected token")
+                            .with_label(
+                                Label::new(span).with_message("expected CLOSING ANGLE BRACKET"),
+                            )
+                            .finish(),
                     );
+
                     break;
                 }
             }
         }
 
-        elems
+        elems.into_boxed_slice()
     }
 
     fn parse_expr_stmt(&mut self) -> ASTStmt {
@@ -688,28 +608,27 @@ impl<'a> Parser<'a> {
             self.advance(1);
             ASTStmt::expr(expr)
         } else {
-            self.compiler.diagnostics.push(
-                DiagnosticBuilder::error(
-                    DiagnosticKind::UnexpectedToken {
-                        given: self.peek(0).kind.clone(),
-                    },
-                    self.peek(0).span,
-                )
-                .build(),
+            let span = self.peek(0).span;
+            self.compiler.reports.push(
+                Report::build(ReportKind::Error, span)
+                    .with_message("missing semicolon")
+                    .with_label(Label::new(span).with_message("expected SEMICOLON"))
+                    .finish(),
             );
+
             ASTStmt::expr(expr)
         }
     }
 
     fn parse_expr(&mut self) -> ASTExpr {
-        if let TokenKind::Identifier(ref name) = self.peek(0).kind {
+        if let TokenKind::Identifier(_) = self.peek(0).kind {
             match self.peek(1).kind {
                 TokenKind::Equals
                 | TokenKind::PlusEquals
                 | TokenKind::MinusEquals
                 | TokenKind::AsteriskEquals
                 | TokenKind::SlashEquals => {
-                    return self.parse_assignment(name.to_string());
+                    return self.parse_assignment(self.peek(0));
                 }
                 _ => {}
             }
@@ -719,82 +638,120 @@ impl<'a> Parser<'a> {
         self.parse_binary_expr(0)
     }
 
-    fn parse_assignment(&mut self, name: String) -> ASTExpr {
-        if let TokenKind::Identifier(ref name) = self.consume().kind {
-            let sym_id_pre = self.compiler.name_interner.intern(&name);
-            match self.compiler.scopes.lookup(sym_id_pre) {
+    fn parse_assignment(&mut self, ident: Token) -> ASTExpr {
+        // Symbol prüfen
+        if let TokenKind::Identifier(ref name_str) = ident.kind {
+            let sym_id_pre = self.compiler.name_interner.intern(name_str);
+
+            match self.compiler.scopes.lookup_symbol(sym_id_pre) {
                 Some(sym_id) => {
                     self.compiler.scopes.with_symbol(sym_id, |sym| {
                         if !sym.mut_ {
-                            self.compiler.diagnostics.push(
-                                DiagnosticBuilder::error(
-                                    DiagnosticKind::ImmutableVariable,
-                                    self.peek(-1).span,
-                                )
-                                .help(
-                                    sym.span.clone(),
-                                    "Variable defined here. Consider making it mutable!",
-                                )
-                                .build(),
+                            let span = ident.span;
+                            self.compiler.reports.push(
+                                Report::build(ReportKind::Error, span)
+                                    .with_message("immutable variable")
+                                    .with_label(Label::new(span).with_message("immutable"))
+                                    .with_label(
+                                        Label::new(sym.span)
+                                            .with_message("consider: make variable mutable"),
+                                    )
+                                    .finish(),
                             );
                         }
                     });
                 }
                 None => {
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::UnknownIdentifier {
-                                identifier: name.to_string(),
-                            },
-                            self.peek(-1).span,
-                        )
-                        .note("Variables must be declared before assigning a value!")
-                        .build(),
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, ident.span)
+                            .with_message("undefined variable")
+                            .with_label(Label::new(ident.span))
+                            .with_help("variables must be declared before using it")
+                            .finish(),
                     );
                 }
             }
         }
 
-        // Consume Operator Token
-        let op = self.consume().kind;
+        self.consume();
 
+        // Operator lesen
+        let op_tok = self.consume();
+        let op = op_tok.kind;
+
+        // RHS
         let rhs = self.parse_expr();
 
-        let start = self.peek(-2).span.start; // Identifier
-        let end = rhs.span.end;
+        // Span
+        let span = Span::merge(ident.span, rhs.span);
 
-        ASTExpr::assignment(name, op, rhs, Span { start, end })
+        ASTExpr::assignment(ident, op, rhs, span)
     }
 
     fn parse_unary_expr(&mut self) -> ASTExpr {
-        match self.peek(0).kind {
-            TokenKind::Minus | TokenKind::Exclamation | TokenKind::And | TokenKind::Asterisk => {
-                let tok = self.consume();
-                let start = tok.span.start;
+        let mut ops = Vec::new();
 
-                let kind = match tok.kind {
-                    TokenKind::Minus => ASTUnaryOperatorKind::Negate,
-                    TokenKind::Exclamation => ASTUnaryOperatorKind::Not,
-                    TokenKind::And => {
-                        if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
-                            self.advance(1);
-                            ASTUnaryOperatorKind::RefMut
-                        } else {
-                            ASTUnaryOperatorKind::Ref
-                        }
+        // 1. Sammle ALLE Prefix-Operatoren
+        loop {
+            match self.peek(0).kind {
+                TokenKind::DoubleAnd => {
+                    let tok = self.consume();
+
+                    // Splitte in zwei '&'
+                    ops.push(ASTUnaryOperator::new(
+                        ASTUnaryOperatorKind::Ref,
+                        Token {
+                            kind: TokenKind::And,
+                            span: Span::new(tok.span.start, tok.span.start + 1, tok.span.end),
+                        },
+                    ));
+
+                    ops.push(ASTUnaryOperator::new(
+                        ASTUnaryOperatorKind::Ref,
+                        Token {
+                            kind: TokenKind::And,
+                            span: Span::new(tok.span.start + 1, tok.span.start, tok.span.end),
+                        },
+                    ));
+                }
+                TokenKind::And => {
+                    let tok = self.consume();
+                    if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
+                        self.consume();
+                        ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::RefMut, tok));
+                    } else {
+                        ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Ref, tok));
                     }
-                    TokenKind::Asterisk => ASTUnaryOperatorKind::Deref,
-                    _ => unreachable!(),
-                };
-
-                let op = ASTUnaryOperator::new(kind, tok);
-                let expr = self.parse_unary_expr();
-                let end = expr.span.end;
-
-                ASTExpr::unary(op, expr, Span { start, end })
+                }
+                TokenKind::Asterisk => {
+                    let tok = self.consume();
+                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Deref, tok));
+                }
+                TokenKind::Minus => {
+                    let tok = self.consume();
+                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Negate, tok));
+                }
+                TokenKind::Exclamation => {
+                    let tok = self.consume();
+                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Not, tok));
+                }
+                _ => break,
             }
-            _ => self.parse_primary_expr(),
         }
+
+        // 2. Parse das eigentliche Operand
+        let mut expr = self.parse_primary_expr();
+
+        // 3. Wende Operatoren RÜCKWÄRTS an
+        for op in ops.into_iter().rev() {
+            expr = ASTExpr::unary(
+                op.clone(),
+                expr.clone(),
+                Span::merge(op.token.span, expr.span),
+            )
+        }
+
+        expr
     }
 
     fn parse_cast_expr(&mut self) -> ASTExpr {
@@ -802,13 +759,13 @@ impl<'a> Parser<'a> {
 
         while self.peek(0).kind == TokenKind::Keyword(Keyword::As) {
             let _ = self.consume(); // 'as'
-            // self.check_whitespace(expr.span.clone(), self.peek(0).span.clone());
+                                    // self.check_whitespace(expr.span.clone(), self.peek(0).span.clone());
 
             let ty = self.parse_type();
-            let start = expr.span.start;
-            let end = self.peek(-1).span.end;
+            let start = expr.span;
+            let end = self.peek(-1).span;
 
-            expr = ASTExpr::cast(expr, ty, Span { start, end });
+            expr = ASTExpr::cast(expr, ty, Span::merge(start, end));
         }
 
         expr
@@ -824,7 +781,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Minus => ASTBinaryOperatorKind::Subtract,
                 TokenKind::Asterisk => ASTBinaryOperatorKind::Multiply,
                 TokenKind::Slash => ASTBinaryOperatorKind::Divide,
-                TokenKind::Percent => ASTBinaryOperatorKind::Modulus,
+                TokenKind::Percent => ASTBinaryOperatorKind::Remainder,
 
                 // Vergleichsoperatoren
                 TokenKind::DoubleEquals => ASTBinaryOperatorKind::Equal,
@@ -880,25 +837,18 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(kw) => match kw {
                 Keyword::True => ASTExpr::bool(true, token.span),
                 Keyword::False => ASTExpr::bool(false, token.span),
-                _ => ASTExpr::error(),
+                _ => ASTExpr::error(token.span.file_id),
             },
             TokenKind::Identifier(name) => {
                 let sym_id = self.compiler.name_interner.intern(&name);
-                if self.compiler.scopes.lookup(sym_id).is_none() {
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::UnknownIdentifier {
-                                identifier: name.to_string(),
-                            },
-                            token.span.clone(),
-                        )
-                        .label(
-                            token.span.clone(),
-                            "unknown identifier or variable not defined",
-                        )
-                        .build(),
+                if self.compiler.scopes.lookup_symbol(sym_id).is_none() {
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, token.span)
+                            .with_message("unknown identifier")
+                            .with_label(Label::new(token.span))
+                            .finish(),
                     );
-                    return ASTExpr::error();
+                    return ASTExpr::error(token.span.file_id);
                 }
                 ASTExpr::variable(name, token.span)
             }
@@ -906,38 +856,35 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr();
                 let rparen = self.consume();
                 if rparen.kind != TokenKind::RParen {
-                    self.compiler.diagnostics.push(
-                        DiagnosticBuilder::error(
-                            DiagnosticKind::UnexpectedToken {
-                                given: token.kind.clone(),
-                            },
-                            token.span.clone(),
-                        )
-                        .label(token.span, "expected ')'")
-                        .build(),
+                    self.compiler.reports.push(
+                        Report::build(ReportKind::Error, token.span)
+                            .with_message("unexpected token")
+                            .with_label(
+                                Label::new(token.span).with_message("expected CLOSING PAREN"),
+                            )
+                            .finish(),
                     );
-                    return ASTExpr::error();
-                }
-                let start = token.span.start;
-                let end = rparen.span.end;
 
-                ASTExpr::parenthesized(expr, Span { start, end })
+                    return ASTExpr::error(token.span.file_id);
+                }
+
+                ASTExpr::parenthesized(expr, Span::merge(token.span, rparen.span))
             }
             TokenKind::LCurly => self.parse_block_expr(),
             TokenKind::Error => {
                 self.consume();
-                ASTExpr::error()
+                ASTExpr::error(token.span.file_id)
             }
             _ => {
                 dbg!(&token.kind);
-                self.compiler.diagnostics.push(
-                    DiagnosticBuilder::error(
-                        DiagnosticKind::ExpectedExpression,
-                        token.span.clone(),
-                    )
-                    .build(),
+                self.compiler.reports.push(
+                    Report::build(ReportKind::Error, token.span)
+                        .with_message("unexpected expression")
+                        .with_label(Label::new(token.span).with_message("expected EXPRESSION"))
+                        .finish(),
                 );
-                return ASTExpr::error();
+
+                return ASTExpr::error(token.span.file_id);
             }
         };
     }

@@ -1,131 +1,6 @@
-use bumpalo::Bump;
-use smallvec::SmallVec;
-
-use std::fmt::{Display, Formatter, Result};
-use std::hash::{Hash, Hasher};
-use std::collections::HashMap;
-use std::result::Result as StdResult;
-
 use crate::Compiler;
 
-// ---------------- SYMBOL INTERN ----------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Symbol(pub u32);
-
-pub struct SymbolInterner {
-    map: HashMap<Box<str>, Symbol>,
-    arena: Vec<Box<str>>,
-}
-
-impl SymbolInterner {
-    pub fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-            arena: Vec::new(),
-        }
-    }
-
-    pub fn intern(&mut self, s: &str) -> Symbol {
-        if let Some(&sym) = self.map.get(s) {
-            return sym;
-        }
-
-        let boxed: Box<str> = s.into();
-        let sym = Symbol(self.arena.len() as u32);
-        self.arena.push(boxed.clone());
-        self.map.insert(boxed, sym);
-        sym
-    }
-
-    pub fn lookup(&self, sym: Symbol) -> &str {
-        &self.arena[sym.0 as usize]
-    }
-}
-
-// ---------------- TYPES ----------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Ty(pub u32); // interned ID (pointer)
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TyKind {
-    Primitive(Primitive),
-    Tuple(SmallVec<[Ty; 2]>),
-    Array(Ty, usize),
-    Generic { base: Symbol, args: SmallVec<[Ty; 2]> },
-    Ref(Ty),
-    MutRef(Ty),
-    Custom(Symbol),
-    Error,
-}
-
-// ---------------- INTERNER (BUMP ARENA + POINTER KEY) ----------------
-
-#[derive(Clone, Copy)]
-struct TyKindKey(*const TyKind);
-
-impl PartialEq for TyKindKey {
-    fn eq(&self, other: &Self) -> bool {
-        unsafe { std::ptr::eq(self.0, other.0) || *self.0 == *other.0 }
-    }
-}
-
-impl Eq for TyKindKey {}
-
-impl Hash for TyKindKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        unsafe { (*self.0).hash(state) }
-    }
-}
-
-pub struct TyInterner {
-    arena: Bump,
-    index: HashMap<TyKindKey, Ty>,
-    // for lookup by Ty
-    kinds: Vec<*const TyKind>,
-}
-
-impl TyInterner {
-    pub fn new() -> Self {
-        let arena = Bump::new();
-        let mut interner = Self {
-            arena,
-            index: HashMap::new(),
-            kinds: Vec::new(),
-        };
-
-        // Ty::Error reserved at ID 0
-        let err = interner.arena.alloc(TyKind::Error);
-        interner.kinds.push(err);
-        interner.index.insert(TyKindKey(err), Ty(0));
-
-        interner
-    }
-
-    pub fn intern(&mut self, kind: TyKind) -> Ty {
-        // allocate into arena first
-        let allocated: &TyKind = self.arena.alloc(kind);
-
-        // lookup by pointer-key
-        let key = TyKindKey(allocated);
-
-        if let Some(&ty) = self.index.get(&key) {
-            return ty;
-        }
-
-        let id = Ty(self.kinds.len() as u32);
-        self.kinds.push(allocated);
-        self.index.insert(key, id);
-        id
-    }
-
-    pub fn kind(&self, ty: Ty) -> &TyKind {
-        unsafe { &*self.kinds[ty.0 as usize] }
-    }
-}
-
-// ---------------- INFERENCE ----------------
+use super::{Primitive, Ty, TyInterner, TyKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InferVar(u32);
@@ -140,23 +15,20 @@ pub enum InferClass {
 pub enum InferNode {
     Var {
         parent: u32,
-        rank: u8, 
-        class: InferClass
+        rank: u8,
+        class: InferClass,
     }, // union-find
-    Link(Ty),                      // bound to a known Ty
+    Link(Ty), // bound to a known Ty
     Error,
 }
 
-pub struct InferCtx
- {
+pub struct InferCtx {
     nodes: Vec<InferNode>,
 }
 
 impl InferCtx {
     pub fn new() -> Self {
-        Self {
-            nodes: Vec::new()
-        }
+        Self { nodes: Vec::new() }
     }
 
     pub fn fresh_int(&mut self) -> InferVar {
@@ -190,11 +62,20 @@ impl InferCtx {
         let root = x;
 
         let mut x = v;
-        while let InferNode::Var { parent, rank: _, class } = self.nodes[x as usize] {
+        while let InferNode::Var {
+            parent,
+            rank: _,
+            class,
+        } = self.nodes[x as usize]
+        {
             if parent == root {
                 break;
             }
-            self.nodes[x as usize] = InferNode::Var { parent: root, rank: 0, class };
+            self.nodes[x as usize] = InferNode::Var {
+                parent: root,
+                rank: 0,
+                class,
+            };
             x = parent;
         }
 
@@ -241,7 +122,12 @@ impl InferCtx {
     }
 
     #[must_use]
-    pub fn unify(&mut self, ty_interner: &mut TyInterner, a: InferTy, b: InferTy) -> StdResult<InferTy, ()> {
+    pub fn unify(
+        &mut self,
+        ty_interner: &mut TyInterner,
+        a: InferTy,
+        b: InferTy,
+    ) -> Result<InferTy, ()> {
         let a = self.resolve(a);
         let b = self.resolve(b);
 
@@ -249,11 +135,14 @@ impl InferCtx {
             (InferTy::Error, _) | (_, InferTy::Error) => Ok(InferTy::Error),
 
             (InferTy::Known(x), InferTy::Known(y)) => {
-                if x == y { Ok(InferTy::Known(x)) } else { Err(()) }
+                if x == y {
+                    Ok(InferTy::Known(x))
+                } else {
+                    Err(())
+                }
             }
 
-            (InferTy::Var(v), InferTy::Known(t))
-            | (InferTy::Known(t), InferTy::Var(v)) => {
+            (InferTy::Var(v), InferTy::Known(t)) | (InferTy::Known(t), InferTy::Var(v)) => {
                 let root = self.find_root(v.0);
 
                 let class = match self.nodes[root as usize] {
@@ -321,7 +210,7 @@ impl InferCtx {
             if let InferNode::Var { class, .. } = *node {
                 let default = match class {
                     InferClass::Integer => Primitive::I32,
-                    InferClass::Float => Primitive::F64,
+                    InferClass::Float => Primitive::F32,
                 };
 
                 let ty = compiler.ty_interner.intern(TyKind::Primitive(default));
@@ -330,19 +219,31 @@ impl InferCtx {
         }
     }
 
-    fn ty_fits_class<'a>(&self, ty_interner: &'a mut TyInterner, ty: Ty, class: InferClass) -> bool {
+    fn ty_fits_class<'a>(
+        &self,
+        ty_interner: &'a mut TyInterner,
+        ty: Ty,
+        class: InferClass,
+    ) -> bool {
         match (class, ty_interner.kind(ty)) {
             (InferClass::Integer, TyKind::Primitive(p)) => matches!(
                 p,
-                Primitive::I8 | Primitive::I16 | Primitive::I32 |
-                Primitive::I64 | Primitive::I128 | Primitive::ISize |
-                Primitive::U8 | Primitive::U16 | Primitive::U32 |
-                Primitive::U64 | Primitive::U128 | Primitive::USize
+                Primitive::I8
+                    | Primitive::I16
+                    | Primitive::I32
+                    | Primitive::I64
+                    | Primitive::I128
+                    | Primitive::ISize
+                    | Primitive::U8
+                    | Primitive::U16
+                    | Primitive::U32
+                    | Primitive::U64
+                    | Primitive::U128
+                    | Primitive::USize
             ),
-            (InferClass::Float, TyKind::Primitive(p)) => matches!(
-                p,
-                Primitive::F32 | Primitive::F64
-            ),
+            (InferClass::Float, TyKind::Primitive(p)) => {
+                matches!(p, Primitive::F32 | Primitive::F64)
+            }
             _ => false,
         }
     }
@@ -353,51 +254,4 @@ pub enum InferTy {
     Known(Ty),
     Var(InferVar),
     Error,
-}
-
-// ---------------- PRIMITIVES ----------------
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum Primitive {
-    I8, I16, I32, I64, I128, ISize,
-    U8, U16, U32, U64, U128, USize,
-    F32, F64,
-    Bool, Char, String,
-}
-
-// ---------------- DISPLAY ----------------
-
-impl Display for TyKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        match self {
-            TyKind::Primitive(p) => write!(f, "{}", p),
-            TyKind::Tuple(ts) => {
-                write!(f, "(")?;
-                for (i, t) in ts.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{}", t.0)?;
-                }
-                write!(f, ")")
-            }
-            TyKind::Array(inner, size) => write!(f, "Array[{}]{{{size}}}", inner.0),
-            TyKind::Ref(inner) => write!(f, "&{}", inner.0),
-            TyKind::MutRef(inner) => write!(f, "&mut {}", inner.0),
-            TyKind::Generic { base, args } => {
-                write!(f, "{}<", base.0)?;
-                for (i, t) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{}", t.0)?;
-                }
-                write!(f, ">")
-            }
-            TyKind::Custom(s) => write!(f, "Custom({})", s.0),
-            TyKind::Error => write!(f, "?T_E"),
-        }
-    }
-}
-
-impl Display for Primitive {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "{:?}", self)
-    }
 }
