@@ -23,8 +23,6 @@ pub enum TokenKind {
     ByteString(Vec<u8>),
     RawString(String),
     RawByteString(Vec<u8>),
-    Bool(bool),
-    Unknown(char),
 
     // Operators
     Plus,
@@ -81,7 +79,7 @@ pub enum TokenKind {
 
     // Specials
     Error,
-    EOF,
+    EndOfFile,
 }
 
 impl Display for TokenKind {
@@ -93,7 +91,6 @@ impl Display for TokenKind {
             TokenKind::String(_) => write!(f, "STR"),
             TokenKind::Char(_) => write!(f, "CHAR"),
             TokenKind::Identifier(_) => write!(f, "IDENTIFIER"),
-            TokenKind::Unknown(_) => write!(f, "<UNKNOWN>"),
             _ => write!(f, "{}", format!("{:?}", self).to_uppercase()),
         }
     }

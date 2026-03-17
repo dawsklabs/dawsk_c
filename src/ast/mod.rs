@@ -12,7 +12,7 @@ use std::io;
 use std::result::Result;
 
 use crate::ast::strings::{StringId, StringPool};
-use crate::ast::visitor::{ASTPrinter, ASTVisitor};
+use crate::ast::visitor::{ASTPrinter, ASTVisitor, Colors};
 use crate::source::Span;
 use smallvec::SmallVec;
 use token::TokenKind;
@@ -21,14 +21,12 @@ use token::TokenKind;
 
 pub struct AST {
     pub items: Vec<ASTItem>,
-    pub strings: StringPool,
 }
 
 impl AST {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
-            strings: StringPool::new(),
         }
     }
 
@@ -40,8 +38,8 @@ impl AST {
         for item in &self.items {
             match item {
                 ASTItem::Stmt(stmt) => visitor.visit_stmt(stmt)?,
-                ASTItem::Use(_) => {}
-                ASTItem::Mod(_) => {}
+                // ASTItem::Use(_) => {}
+                // ASTItem::Mod(_) => {}
             }
         }
 
@@ -54,6 +52,7 @@ impl AST {
             indent: 0,
             out: &mut output,
             string_pool,
+            color: Colors::new(),
         };
         let _ = self.visit(&mut printer);
     }
@@ -61,8 +60,8 @@ impl AST {
 
 pub enum ASTItem {
     Stmt(ASTStmt),
-    Use(ASTUse),
-    Mod(ASTMod),
+    // Use(ASTUse),
+    // Mod(ASTMod),
     // später: Fn, Struct, etc.
 }
 
@@ -80,7 +79,7 @@ pub struct ASTMod {
 #[derive(Debug, Clone)]
 pub enum ASTStmtKind {
     Expr(ASTExpr),
-    Return(ASTExpr),
+    // Return(ASTExpr),
     VarDec(ASTVarDecExpr),
     ConstDec(ASTConstDecExpr),
     StructDec(ASTStructDecExpr),

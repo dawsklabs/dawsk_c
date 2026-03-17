@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt::{Formatter, Result};
 use std::io::Write;
 
@@ -105,47 +106,30 @@ pub enum StreamType {
     Stderr,
 }
 
-#[cfg(feature = "compiler-diagnostics-color")]
-impl From<StreamType> for Stream {
-    fn from(s: StreamType) -> Self {
-        match s {
-            StreamType::Stdout => compiler - diagnostics - color::Stream::Stdout,
-            StreamType::Stderr => compiler - diagnostics - color::Stream::Stderr,
-        }
-    }
-}
-
 /// A trait used to add formatting attributes to displayable items intended to be written to a
 /// particular stream (`stdout` or `stderr`).
 ///
 /// Attributes specified through this trait are not composable (i.e: the behaviour of two nested attributes each with a
 /// conflicting attribute is left unspecified).
 pub trait StreamAwareFmt: Sized {
-    #[cfg(feature = "compiler-diagnostics-color")]
     /// Returns true if color is enabled for the given stream.
-    fn color_enabled_for(s: StreamType) -> bool {
-        compiler - diagnostics - color::get(s.into()).color()
-    }
-
-    #[cfg(not(feature = "compiler-diagnostics-color"))]
-    #[doc(hidden)]
     fn color_enabled_for(_: StreamType) -> bool {
-        true
+        COLOR_ENABLE.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Give this value the specified foreground colour, when color is enabled for the specified stream.
-    fn fg<C: Into<Option<Color>>>(self, color: C, stream: StreamType) -> Foreground<Self> {
+    fn fg(self, color: Option<&'static str>, stream: StreamType) -> Foreground<Self> {
         if Self::color_enabled_for(stream) {
-            Foreground(self, color.into())
+            Foreground(self, color)
         } else {
             Foreground(self, None)
         }
     }
 
     /// Give this value the specified background colour, when color is enabled for the specified stream.
-    fn bg<C: Into<Option<Color>>>(self, color: C, stream: StreamType) -> Background<Self> {
+    fn bg(self, color: Option<&'static str>, stream: StreamType) -> Background<Self> {
         if Self::color_enabled_for(stream) {
-            Background(self, color.into())
+            Background(self, color)
         } else {
             Background(self, None)
         }
@@ -156,34 +140,23 @@ impl<T: Display> StreamAwareFmt for T {}
 
 /// A trait used to add formatting attributes to displayable items.
 ///
-/// If using the `compiler-diagnostics-color` feature, this trait assumes that the items are going to be printed to
-/// `stderr`. If you are printing to `stdout`, `use` the [`StdoutFmt`] trait instead.
-///
 /// Attributes specified through this trait are not composable (i.e: the behaviour of two nested attributes each with a
 /// conflicting attribute is left unspecified).
 pub trait Fmt: Sized {
     /// Give this value the specified foreground colour.
-    fn fg<C: Into<Option<Color>>>(self, color: C) -> Foreground<Self>
+    fn fg(self, color: Option<&'static str>) -> Foreground<Self>
     where
         Self: fmt::Display,
     {
-        if cfg!(feature = "compiler-diagnostics-color") {
-            StreamAwareFmt::fg(self, color, StreamType::Stderr)
-        } else {
-            Foreground(self, color.into())
-        }
+        StreamAwareFmt::fg(self, color, StreamType::Stderr)
     }
 
     /// Give this value the specified background colour.
-    fn bg<C: Into<Option<Color>>>(self, color: C) -> Background<Self>
+    fn bg(self, color: Option<&'static str>) -> Background<Self>
     where
         Self: Display,
     {
-        if cfg!(feature = "compiler-diagnostics-color") {
-            StreamAwareFmt::bg(self, color, StreamType::Stdout)
-        } else {
-            Background(self, color.into())
-        }
+        StreamAwareFmt::bg(self, color, StreamType::Stdout)
     }
 }
 
@@ -193,52 +166,40 @@ impl<T: Display> Fmt for T {}
 ///
 /// Attributes specified through this trait are not composable (i.e: the behaviour of two nested attributes each with a
 /// conflicting attribute is left unspecified).
-#[cfg(any(feature = "compiler-diagnostics-color", doc))]
 pub trait StdoutFmt: StreamAwareFmt {
     /// Give this value the specified foreground colour, when color is enabled for `stdout`.
-    fn fg<C: Into<Option<Color>>>(self, color: C) -> Foreground<Self> {
+    fn fg(self, color: Option<&'static str>) -> Foreground<Self> {
         StreamAwareFmt::fg(self, color, StreamType::Stdout)
     }
 
     /// Give this value the specified background colour, when color is enabled for `stdout`.
-    fn bg<C: Into<Option<Color>>>(self, color: C) -> Background<Self> {
+    fn bg(self, color: Option<&'static str>) -> Background<Self> {
         StreamAwareFmt::bg(self, color, StreamType::Stdout)
     }
 }
 
-#[cfg(feature = "compiler-diagnostics-color")]
 impl<T: fmt::Display> StdoutFmt for T {}
 
-#[derive(Copy, Clone, Debug)]
-pub struct Foreground<T>(T, Option<Color>);
+#[derive(Clone, Debug, Copy)]
+pub struct Foreground<T>(T, Option<&'static str>);
+
 impl<T: Display> Display for Foreground<T> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         if let Some(col) = self.1 {
-            write!(
-                f,
-                "{}{}{}",
-                col,            // Farbe setzen
-                self.0,         // Inhalt
-                Color::ResetFg  // oder ResetAll, je nach Bedarf
-            )
+            write!(f, "{}{}{}", col, self.0, color::RESET_FG)
         } else {
             write!(f, "{}", self.0)
         }
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Background<T>(T, Option<Color>);
+#[derive(Clone, Debug, Copy)]
+pub struct Background<T>(T, Option<&'static str>);
+
 impl<T: Display> Display for Background<T> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         if let Some(col) = self.1 {
-            write!(
-                f,
-                "{}{}{}",
-                col,            // Farbe setzen
-                self.0,         // Inhalt
-                Color::ResetBg  // oder ResetAll, je nach Bedarf
-            )
+            write!(f, "{}{}{}", col, self.0, color::RESET_BG)
         } else {
             write!(f, "{}", self.0)
         }
@@ -306,18 +267,16 @@ impl ColorGenerator {
 
     /// Generate the next colour in the sequence.
     #[allow(clippy::should_implement_trait)]
-    pub const fn next(&mut self) -> Color {
+    pub fn next(&mut self) -> String {
         let mut i = 0;
         while i < 3 {
             self.state[i] = (self.state[i] as usize).wrapping_add(40503 * (i * 4 + 1130)) as u16;
             i += 1;
         }
-
         let r = (self.state[0] >> 8) as u8;
         let g = (self.state[1] >> 8) as u8;
         let b = (self.state[2] >> 8) as u8;
-
-        Color::FgRGB(r, g, b)
+        color::fg_rgb(r, g, b)
     }
 }
 

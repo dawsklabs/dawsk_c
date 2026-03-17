@@ -8,17 +8,14 @@ pub use crate::reports::{
     source::{Cache, Source},
 };
 
-#[cfg(any(feature = "compiler-diagnostics-color", doc))]
-pub use crate::reports::renderer::StdoutFmt;
-
-use crate::color::{self, Color};
+use crate::{args::{COLOR_ENABLE, UNICODE_ENABLE}, color};
 use std::{
     cmp::{Eq, PartialEq},
     fmt::{self, Debug, Display},
     hash::Hash,
     io::{self, Write},
     ops::{Range, RangeInclusive},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::Ordering},
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -118,7 +115,7 @@ impl<Id: fmt::Debug + Hash + PartialEq + Eq + ToOwned> Span for (Id, RangeInclus
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct LabelDisplay {
     msg: Option<String>,
-    color: Option<Color>,
+    color: Option<&'static str>,
     order: i32,
     priority: i32,
 }
@@ -158,7 +155,7 @@ impl<S: Span> Label<S> {
     }
 
     /// Give this label a highlight colour.
-    pub fn with_color(mut self, color: Color) -> Self {
+    pub fn with_color(mut self, color: &'static str) -> Self {
         self.display_info.color = Some(color);
         self
     }
@@ -193,6 +190,7 @@ impl<S: Span> Label<S> {
     }
 }
 
+#[derive(Default)]
 pub struct ReportBag {
     pub inner: Arc<Mutex<ReportBagInner>>,
 }
@@ -210,6 +208,7 @@ impl ReportBag {
 }
 
 #[must_use = "call `.render()` to render and then print the report"]
+#[derive(Default)]
 pub struct ReportBagInner {
     reports: Vec<Report<crate::source::Span>>,
 }
@@ -261,7 +260,10 @@ impl<S: Span, K: ReportStyle> Report<S, K> {
             help: vec![],
             span,
             labels: Vec::new(),
-            config: Config::default(),
+            config: Config::new(
+                COLOR_ENABLE.load(Ordering::Relaxed),
+                UNICODE_ENABLE.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -294,20 +296,19 @@ impl<S: Span, K: ReportStyle> fmt::Debug for Report<S, K> {
 
 /// A triat for coloring messages, requires Display for naming the Report error/warning/note etc
 pub trait ReportStyle: Display + Debug {
-    /// return the color (if any) to use for the Report
-    fn get_color(&self, _config: &Config) -> Option<Color> {
+    fn get_color(&self, _config: &Config) -> Option<&'static str> {
         None
     }
 }
 
 impl ReportStyle for String {
-    fn get_color(&self, _: &Config) -> Option<Color> {
+    fn get_color(&self, _: &Config) -> Option<&'static str> {
         None
     }
 }
 
 impl ReportStyle for &str {
-    fn get_color(&self, _: &Config) -> Option<Color> {
+    fn get_color(&self, _: &Config) -> Option<&'static str> {
         None
     }
 }
@@ -318,7 +319,7 @@ pub struct BasicStyle<Str: Display + Debug = String> {
     /// the name to display in labels
     pub name: Str,
     /// color to use
-    pub color: Color,
+    pub color: &'static str,
 }
 
 impl<Str: Display + Debug> Display for BasicStyle<Str> {
@@ -328,7 +329,7 @@ impl<Str: Display + Debug> Display for BasicStyle<Str> {
 }
 
 impl<Str: Display + Debug> ReportStyle for BasicStyle<Str> {
-    fn get_color(&self, config: &Config) -> Option<Color> {
+    fn get_color(&self, config: &Config) -> Option<&'static str> {
         Some(self.color).filter(|_| config.color)
     }
 }
@@ -348,7 +349,7 @@ pub enum ReportKind {
     Advice,
 
     /// The report is of a kind not built into Ariadne.
-    Custom(&'static str, Color),
+    Custom(&'static str, &'static str),
 }
 
 impl fmt::Display for ReportKind {
@@ -364,13 +365,12 @@ impl fmt::Display for ReportKind {
 }
 
 impl ReportStyle for ReportKind {
-    fn get_color(&self, config: &Config) -> Option<Color> {
-        #[allow(deprecated)]
+    fn get_color(&self, config: &Config) -> Option<&'static str> {
         match self {
-            ReportKind::Error => config.error_color(),
+            ReportKind::Error   => config.error_color(),
             ReportKind::Warning => config.warning_color(),
-            ReportKind::Advice => config.advice_color(),
-            ReportKind::Custom(_, color) => Some(*color).filter(|_| config.color),
+            ReportKind::Advice  => config.advice_color(),
+            ReportKind::Custom(_, color) => if config.color { Some(color) } else { None },
         }
     }
 }
@@ -676,29 +676,29 @@ impl Config {
         self
     }
 
-    fn error_color(&self) -> Option<Color> {
+    fn error_color(&self) -> Option<&'static str> {
         Some(color::RED_COLOR).filter(|_| self.color)
     }
-    fn warning_color(&self) -> Option<Color> {
+    fn warning_color(&self) -> Option<&'static str> {
         Some(color::YELLOW_COLOR).filter(|_| self.color)
     }
-    fn advice_color(&self) -> Option<Color> {
+    fn advice_color(&self) -> Option<&'static str> {
         Some(color::GREEN_COLOR).filter(|_| self.color)
     }
-    fn margin_color(&self) -> Option<Color> {
+    fn margin_color(&self) -> Option<&'static str> {
         Some(color::BLUE_COLOR).filter(|_| self.color)
     }
-    fn skipped_margin_color(&self) -> Option<Color> {
+    fn skipped_margin_color(&self) -> Option<&'static str> {
         Some(color::BLUE_COLOR).filter(|_| self.color)
     }
-    fn unimportant_color(&self) -> Option<Color> {
-        Some(Color::ResetFg).filter(|_| self.color)
+    fn unimportant_color(&self) -> Option<&'static str> {
+        Some(color::RESET_FG).filter(|_| self.color)
     }
-    fn note_color(&self) -> Option<Color> {
+    fn note_color(&self) -> Option<&'static str> {
         Some(color::BLUE_COLOR).filter(|_| self.color)
     }
-    fn filter_color(&self, color: Option<Color>) -> Option<Color> {
-        color.filter(|_| self.color)
+    fn filter_color(&self, color: Option<&'static str>) -> Option<&'static str> {
+        if self.color { color } else { None }
     }
 
     // Find the character that should be drawn and the number of times it should be drawn for each char
@@ -715,16 +715,16 @@ impl Config {
     }
 
     /// Create a new, default config.
-    pub const fn new() -> Self {
+    pub const fn new(color: bool, unicode: bool) -> Self {
         Self {
             cross_gap: true,
             label_attach: LabelAttach::Middle,
             compact: false,
             underlines: true,
             multiline_arrows: true,
-            color: true,
+            color,
             tab_width: 4,
-            char_set: CharSet::Unicode,
+            char_set: if unicode { CharSet::Unicode } else { CharSet::Ascii },
             index_type: IndexType::Char,
             minimise_crossings: false,
             context_lines: 0,
@@ -737,6 +737,6 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self::new()
+        Self::new(true, false)
     }
 }

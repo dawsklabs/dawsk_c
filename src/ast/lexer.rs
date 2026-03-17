@@ -1,9 +1,10 @@
 use std::collections::VecDeque;
 
 use super::token::{Keyword, Token, TokenKind};
+use crate::color::{RED_COLOR, YELLOW_COLOR};
 use crate::reports::{Label, Report, ReportKind};
 use crate::source::Span;
-use crate::{color, Compiler};
+use crate::Compiler;
 
 #[derive(Clone, Copy)]
 pub enum LexMode {
@@ -30,9 +31,9 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn get_mode(&self) -> LexMode {
-        *self.mode.back().unwrap()
-    }
+    // pub fn get_mode(&self) -> LexMode {
+    //     *self.mode.back().unwrap()
+    // }
 
     pub fn add_mode(&mut self, m: LexMode) {
         self.mode.push_back(m);
@@ -188,7 +189,7 @@ impl<'a> Lexer<'a> {
                         .with_label(
                             Label::new(span)
                                 .with_message("unknown or non ascii character")
-                                .with_color(color::RED_COLOR),
+                                .with_color(RED_COLOR),
                         )
                         .finish(),
                 );
@@ -196,7 +197,7 @@ impl<'a> Lexer<'a> {
                 return self.create_token(TokenKind::Error, span.start, span.end);
             }
 
-            None => (TokenKind::EOF, 0),
+            None => (TokenKind::EndOfFile, 0),
         };
 
         self.advance(len);
@@ -226,7 +227,7 @@ impl<'a> Lexer<'a> {
                         .with_label(
                             Label::new(span)
                                 .with_message("must start with a letter or underscore")
-                                .with_color(color::RED_COLOR),
+                                .with_color(RED_COLOR),
                         )
                         .finish(),
                 );
@@ -340,7 +341,7 @@ impl<'a> Lexer<'a> {
                     self.compiler.shared.reports.push(
                         Report::build(ReportKind::Warning, span)
                             .with_message("underscore directly after base prefix")
-                            .with_label(Label::new(span).with_color(color::YELLOW_COLOR))
+                            .with_label(Label::new(span).with_color(YELLOW_COLOR))
                             .with_help("consider: remove")
                             .finish(),
                     );
@@ -361,7 +362,7 @@ impl<'a> Lexer<'a> {
                     self.compiler.shared.reports.push(
                         Report::build(ReportKind::Warning, span)
                             .with_message("trailing underscore in number literal")
-                            .with_label(Label::new(span).with_color(color::YELLOW_COLOR))
+                            .with_label(Label::new(span).with_color(YELLOW_COLOR))
                             .with_help("consider: remove")
                             .finish(),
                     );
@@ -402,11 +403,11 @@ impl<'a> Lexer<'a> {
 
                 let mut labels: Vec<Label<Span>> = Vec::new();
 
-                for (_, (s, e)) in groups.iter().enumerate() {
+                for (s, e) in groups.iter() {
                     if e - s >= 1 {
                         let span = Span::new(start + s, start + e + 1, self.file_id);
 
-                        labels.push(Label::new(span).with_color(color::YELLOW_COLOR));
+                        labels.push(Label::new(span).with_color(YELLOW_COLOR));
                     }
                 }
 
@@ -431,7 +432,7 @@ impl<'a> Lexer<'a> {
                     .with_label(
                         Label::new(span)
                             .with_message("non-supported digit(s)")
-                            .with_color(color::RED_COLOR),
+                            .with_color(RED_COLOR),
                     )
                     .finish(),
             );
@@ -446,7 +447,7 @@ impl<'a> Lexer<'a> {
                     .with_label(
                         Label::new(span)
                             .with_message("invalid digit(s)")
-                            .with_color(color::RED_COLOR),
+                            .with_color(RED_COLOR),
                     )
                     .finish(),
             );
@@ -468,7 +469,7 @@ impl<'a> Lexer<'a> {
                         .with_label(
                             Label::new(span)
                                 .with_message("this number is too big")
-                                .with_color(color::RED_COLOR),
+                                .with_color(RED_COLOR),
                         )
                         .finish(),
                 );
@@ -514,7 +515,7 @@ impl<'a> Lexer<'a> {
                             .with_label(
                                 Label::new(span)
                                     .with_message("not parsable as float")
-                                    .with_color(color::RED_COLOR),
+                                    .with_color(RED_COLOR),
                             )
                             .finish(),
                     );
@@ -532,7 +533,7 @@ impl<'a> Lexer<'a> {
                             .with_label(
                                 Label::new(span)
                                     .with_message("not parsable as integer")
-                                    .with_color(color::RED_COLOR),
+                                    .with_color(RED_COLOR),
                             )
                             .finish(),
                     );
@@ -558,12 +559,12 @@ impl<'a> Lexer<'a> {
                     Some(b'"') => '"',
                     Some(other) => other as char, // unknown escape, interpret as literal
                     None => {
-                        // EOF nach \
+                        // EndOfFile nach \
                         let span = Span::new(start, start + i, self.file_id);
                         self.compiler.shared.reports.push(
                             Report::build(ReportKind::Error, span)
                                 .with_message("unterminated or invalid escape in char literal")
-                                .with_label(Label::new(span).with_color(color::RED_COLOR))
+                                .with_label(Label::new(span).with_color(RED_COLOR))
                                 .finish(),
                         );
                         return (TokenKind::Error, i);
@@ -572,7 +573,7 @@ impl<'a> Lexer<'a> {
             }
             Some(byte) => byte as char,
             None => {
-                // EOF direkt nach '
+                // EndOfFile direkt nach '
                 let span = Span::new(start, start + i, self.file_id);
                 self.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, span)
@@ -580,7 +581,7 @@ impl<'a> Lexer<'a> {
                         .with_label(
                             Label::new(span)
                                 .with_message("not parsable as char (u8)")
-                                .with_color(color::RED_COLOR),
+                                .with_color(RED_COLOR),
                         )
                         .finish(),
                 );
@@ -599,7 +600,7 @@ impl<'a> Lexer<'a> {
             self.compiler.shared.reports.push(
                 Report::build(ReportKind::Error, span)
                     .with_message("unterminated char literal")
-                    .with_label(Label::new(span).with_color(color::RED_COLOR))
+                    .with_label(Label::new(span).with_color(RED_COLOR))
                     .finish(),
             );
             (TokenKind::Error, i)
@@ -641,7 +642,7 @@ impl<'a> Lexer<'a> {
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("invalid byte char literal")
-                .with_label(Label::new(span).with_color(color::RED_COLOR))
+                .with_label(Label::new(span).with_color(RED_COLOR))
                 .finish(),
         );
 
@@ -690,7 +691,7 @@ impl<'a> Lexer<'a> {
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
-                .with_label(Label::new(span).with_color(color::RED_COLOR))
+                .with_label(Label::new(span).with_color(RED_COLOR))
                 .finish(),
         );
 
@@ -725,7 +726,7 @@ impl<'a> Lexer<'a> {
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
-                .with_label(Label::new(span).with_color(color::RED_COLOR))
+                .with_label(Label::new(span).with_color(RED_COLOR))
                 .finish(),
         );
 
@@ -774,7 +775,7 @@ impl<'a> Lexer<'a> {
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
-                .with_label(Label::new(span).with_color(color::RED_COLOR))
+                .with_label(Label::new(span).with_color(RED_COLOR))
                 .finish(),
         );
 
@@ -799,7 +800,7 @@ impl<'a> Lexer<'a> {
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
-                .with_label(Label::new(span).with_color(color::RED_COLOR))
+                .with_label(Label::new(span).with_color(RED_COLOR))
                 .finish(),
         );
 

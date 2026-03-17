@@ -5,10 +5,11 @@ edition = "2021"
 
 [dependencies]
 bumpalo = "3.19.1"
+const_format = "0.2.35"
 memchr = "2.7.6"
 smallvec = "1.15.1"
 strip-ansi-escapes = "0.2.1"
 unicode-width = "0.2.2"
 
-[features]
-compiler-diagnostics-color = []
+[profile.release]
+debug = true

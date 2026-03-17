@@ -1,7 +1,7 @@
 use std::io;
 use std::ops::Range;
 
-use crate::color::Color;
+use crate::color;
 use crate::reports::renderer::{StreamAwareFmt, StreamType, WrappedWriter};
 use crate::reports::source::Cache;
 use crate::reports::{
@@ -166,9 +166,6 @@ impl<S: Span, K: ReportStyle> Report<S, K> {
 
     /// Write this diagnostic to an implementor of [`Write`].
     ///
-    /// If using the `compiler-diagnostics-color` feature, this method assumes that the output is ultimately going to be printed to
-    /// `stderr`.  If you are printing to `stdout`, use the [`write_for_stdout`](Self::write_for_stdout) method instead.
-    ///
     /// If you wish to write to `stderr` or `stdout`, you can do so via [`Report::eprint`] or [`Report::print`] respectively.
     pub fn write<C: Cache<S::SourceId>, W: Write>(&self, cache: C, w: W) -> io::Result<()> {
         self.write_for_stream(cache, w, StreamType::Stderr)
@@ -206,10 +203,10 @@ impl<S: Span, K: ReportStyle> Report<S, K> {
         writeln!(
             w,
             "{}{}: {}{}",
-            Color::Bold,
+            color::BOLD,
             id.fg(kind_color, s),
             Show(self.msg.as_ref()),
-            Color::ResetBold
+            color::RESET_BOLD
         )?;
 
         let groups = self.get_source_groups(&mut cache);

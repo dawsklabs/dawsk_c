@@ -190,7 +190,7 @@ impl ModuleResolver {
 //     loop {
 //         let t = lexer.next_token();
 //         tokens.push(t.clone());
-//         if t.kind == TokenKind::EOF || t.kind == TokenKind::Error {
+//         if t.kind == TokenKind::EndOfFile || t.kind == TokenKind::Error {
 //             break;
 //         }
 //     }

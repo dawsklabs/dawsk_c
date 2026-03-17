@@ -4,7 +4,7 @@ pub struct MyStruct<T = i32> {
     c: T,
 };
 
-pub const M: i16 = -15; // constants
+pub const M: i16 = -15 + 5; // constants
 
 pub struct A(i8, pkg::B);
 
@@ -12,7 +12,12 @@ pub type B<T> = (T, u8);
 
 type C<T = i32> = B<T>;
 
-struct D;
+struct E;
+
+pub struct Token {
+    pub kind: TokenKind,
+    pub span: Span,
+}
 
 pub enum TokenKind {
     // Keywords
@@ -84,5 +89,5 @@ pub enum TokenKind {
 
     // Specials
     Error,
-    EOF,
+    EndOfFile,
 }

@@ -124,7 +124,7 @@ pub enum TokenKind {
 
     // Specials
     Error,
-    EOF,
+    EndOfFile,
 }
 
 pub type Age = u16;

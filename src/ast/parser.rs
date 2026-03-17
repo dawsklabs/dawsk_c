@@ -8,16 +8,19 @@ use super::{
 };
 use crate::ast::strings::{StringId, StringPool};
 use crate::ast::{ASTEnumVariant, ASTEnumVariantKind, ASTGenericParam, Ident};
+use crate::color::RED_COLOR;
 use crate::reports::{Label, Report, ReportKind};
 
 use crate::source::Span;
-use crate::{abort, color, Compiler};
+use crate::{Compiler, abort, args};
 use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     buffer: VecDeque<Token>,
     pub string_pool: StringPool,
+    log_tokens: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -27,12 +30,16 @@ impl<'a> Parser<'a> {
             lexer,
             buffer: VecDeque::with_capacity(4),
             string_pool: StringPool::new(),
+            log_tokens: args::step_enabled(args::step::TOKEN),
         }
     }
 
     fn ensure_buffered(&mut self, n: usize) {
         while self.buffer.len() <= n {
             let tok = self.lexer.next_token();
+            if self.log_tokens {
+                println!("{:?} @ {:?}", tok.kind, tok.span);
+            }
             self.buffer.push_back(tok);
         }
     }
@@ -53,8 +60,12 @@ impl<'a> Parser<'a> {
     }
 
     pub fn advance(&mut self, n: usize) {
-        self.ensure_buffered(n.saturating_sub(1));
-        self.buffer.drain(..n.min(self.buffer.len()));
+        for _ in 0..n {
+            if self.buffer.pop_front().is_none() {
+                let tok = self.lexer.next_token();
+                drop(tok); // direkt verwerfen ohne buffern
+            }
+        }
     }
 
     pub fn consume(&mut self) -> Token {
@@ -70,7 +81,11 @@ impl<'a> Parser<'a> {
         self.lexer.compiler.shared.reports.push(
             Report::build(ReportKind::Error, token.span)
                 .with_message(format!("expected `{expected}`, found `{}`", token.kind))
-                .with_label(Label::new(token.span).with_message(format!("expected {expected}")))
+                .with_label(
+                    Label::new(token.span)
+                        .with_message(format!("expected {expected}"))
+                        .with_color(RED_COLOR),
+                )
                 .finish(),
         );
         token
@@ -83,7 +98,8 @@ impl<'a> Parser<'a> {
         self.lexer.compiler.shared.reports.push(
             Report::build(ReportKind::Warning, Span::merge(starter, next))
                 .with_message("unexpected whitespace")
-                .with_label(Label::new(Span::merge(starter, next)))
+                .with_label(Label::new(Span::merge(starter, next))
+                .with_color(RED_COLOR))
                 .finish(),
         );
     }
@@ -106,7 +122,7 @@ impl<'a> Parser<'a> {
                     .with_label(
                         Label::new(tok.span)
                             .with_message("expected IDENTIFIER")
-                            .with_color(color::RED_COLOR),
+                            .with_color(RED_COLOR),
                     )
                     .finish(),
             );
@@ -114,17 +130,11 @@ impl<'a> Parser<'a> {
         tok
     }
 
-    fn intern_identifier(&mut self, token: &Token) -> StringId {
-        if let TokenKind::Identifier(name) = &token.kind {
-            self.string_pool.intern(name)
-        } else {
-            StringId::EMPTY
-        }
-    }
-
-    // ← NEUE FUNKTION
     fn make_ident(&mut self, token: &Token) -> Ident {
-        let id = self.intern_identifier(token);
+        let id = match &token.kind {
+            TokenKind::Identifier(name) => self.string_pool.intern(name),
+            _ => StringId::EMPTY,
+        };
         Ident::new(id, token.span)
     }
 
@@ -146,7 +156,7 @@ impl<'a> Parser<'a> {
             self.advance(1);
         }
 
-        if self.peek(0).kind == TokenKind::EOF
+        if self.peek(0).kind == TokenKind::EndOfFile
             || self.peek(0).kind == TokenKind::Error
             || self.peek(0).kind == TokenKind::RCurly
         {
@@ -156,16 +166,13 @@ impl<'a> Parser<'a> {
         Some(self.parse_stmt())
     }
 
-    fn peek_item_keyword(&mut self) -> TokenKind {
-        if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
-            self.peek(1).kind.clone()
-        } else {
-            self.peek(0).kind.clone()
-        }
-    }
-
     fn parse_stmt(&mut self) -> ASTStmt {
-        match self.peek_item_keyword() {
+        let offset = if matches!(self.peek(0).kind, TokenKind::Keyword(Keyword::Pub)) {
+            1
+        } else {
+            0
+        };
+        match &self.peek(offset).kind {
             TokenKind::Keyword(Keyword::Dec) => self.parse_var_dec_stmt(),
             TokenKind::Keyword(Keyword::Const) => self.parse_const_stmt(),
             TokenKind::Keyword(Keyword::Type) => self.parse_type_alias_stmt(),
@@ -182,9 +189,14 @@ impl<'a> Parser<'a> {
         let mut stmts = Vec::new();
         let mut tail_expr = None;
 
-        while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
+        while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EndOfFile {
             // dec-Variablen sind in Blöcken immer Statements
-            match self.peek_item_keyword() {
+            let offset = if matches!(self.peek(0).kind, TokenKind::Keyword(Keyword::Pub)) {
+                1
+            } else {
+                0
+            };
+            match &self.peek(offset).kind {
                 TokenKind::Keyword(Keyword::Dec) => {
                     stmts.push(self.parse_var_dec_stmt());
                 }
@@ -260,7 +272,7 @@ impl<'a> Parser<'a> {
                         .with_label(
                             Label::new(span)
                                 .with_message("expected COMMA or end of declaration")
-                                .with_color(color::RED_COLOR),
+                                .with_color(RED_COLOR),
                         )
                         .finish(),
                 );
@@ -274,7 +286,7 @@ impl<'a> Parser<'a> {
     {
         let mut fields = smallvec![];
 
-        while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EOF {
+        while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EndOfFile {
             fields.push(parse_field(self));
         }
 
@@ -290,7 +302,7 @@ impl<'a> Parser<'a> {
                     .with_label(
                         Label::new(span)
                             .with_message("remove PUB here")
-                            .with_color(color::RED_COLOR),
+                            .with_color(RED_COLOR),
                     )
                     .finish(),
             );
@@ -418,7 +430,7 @@ impl<'a> Parser<'a> {
         self.consume_check(TokenKind::LCurly);
         let mut variants = smallvec![];
 
-        while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
+        while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EndOfFile {
             variants.push(self.parse_enum_variant());
         }
 
@@ -540,7 +552,7 @@ impl<'a> Parser<'a> {
 
     // fn parse_extend_items(&mut self) -> Vec<ASTExtendItem> {
     //     let mut items = vec![];
-    //     while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
+    //     while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EndOfFile {
     //         // Semicolons überspringen
     //         while self.parse_optional_token(TokenKind::Semicolon) {}
 
@@ -652,7 +664,7 @@ impl<'a> Parser<'a> {
                         .with_label(
                             Label::new(span)
                                 .with_message("expected TYPE")
-                                .with_color(color::RED_COLOR),
+                                .with_color(RED_COLOR),
                         )
                         .finish(),
                 );
@@ -684,7 +696,7 @@ impl<'a> Parser<'a> {
                             .with_label(
                                 Label::new(span)
                                     .with_message("expected CLOSING ANGLE BRACKET or COMMA")
-                                    .with_color(color::RED_COLOR),
+                                    .with_color(RED_COLOR),
                             )
                             .finish(),
                     );
@@ -735,7 +747,7 @@ impl<'a> Parser<'a> {
                             .with_label(
                                 Label::new(span)
                                     .with_message("expected CLOSING ANGLE BRACKET or COMMA")
-                                    .with_color(color::RED_COLOR),
+                                    .with_color(RED_COLOR),
                             )
                             .finish(),
                     );
@@ -776,12 +788,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_assignment(&mut self, ident: Ident) -> ASTExpr {
-        // Symbol prüfen
-        let _ = self.consume_identifier();
-
         // Operator lesen
-        let op_tok = self.consume();
-        let op = op_tok.kind;
+        let op = self.consume();
 
         // RHS
         let rhs = self.parse_expr();
@@ -789,7 +797,7 @@ impl<'a> Parser<'a> {
         // Span
         let span = Span::merge(ident.span, rhs.span);
 
-        ASTExpr::assignment(ident.clone(), op, rhs, span)
+        ASTExpr::assignment(ident, op.kind, rhs, span)
     }
 
     fn parse_unary_expr(&mut self) -> ASTExpr {
@@ -842,7 +850,8 @@ impl<'a> Parser<'a> {
 
         // 3. Wende Operatoren RÜCKWÄRTS an
         for op in ops.into_iter().rev() {
-            expr = ASTExpr::unary(op.clone(), expr.clone(), Span::merge(op.span, expr.span))
+            let span = Span::merge(op.span, expr.span);
+            expr = ASTExpr::unary(op, expr, span);
         }
 
         expr
@@ -870,7 +879,7 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_cast_expr();
 
         loop {
-            let op_token = self.peek(0).clone();
+            let op_token = self.peek(0);
             let op_kind = match &op_token.kind {
                 TokenKind::Plus => ASTBinaryOperatorKind::Add,
                 TokenKind::Minus => ASTBinaryOperatorKind::Subtract,
@@ -983,7 +992,7 @@ impl<'a> Parser<'a> {
         self.consume_check(TokenKind::LParen);
         let mut args = Vec::new();
 
-        while self.peek(0).kind != TokenKind::RParen && self.peek(0).kind != TokenKind::EOF {
+        while self.peek(0).kind != TokenKind::RParen && self.peek(0).kind != TokenKind::EndOfFile {
             args.push(self.parse_expr());
             if self.peek(0).kind == TokenKind::Comma {
                 self.advance(1);
@@ -1057,7 +1066,7 @@ impl<'a> Parser<'a> {
                         .with_label(
                             Label::new(token.span)
                                 .with_message("expected EXPRESSION")
-                                .with_color(color::RED_COLOR),
+                                .with_color(RED_COLOR),
                         )
                         .finish(),
                 );

@@ -4,7 +4,6 @@ use std::io::{self, Write};
 use smallvec::SmallVec;
 
 use crate::ast::strings::{StringId, StringPool};
-use crate::ast::token::TokenKind;
 use crate::ast::{
     ASTAssignmentExpr, ASTBinaryExpr, ASTBlockExpr, ASTCallExpr, ASTCastExpr, ASTConstDecExpr,
     ASTEnumDecExpr, ASTEnumVariant, ASTEnumVariantKind, ASTExpr, ASTExprKind, ASTFieldAccessExpr,
@@ -14,15 +13,23 @@ use crate::ast::{
     ASTUnitStructDecExpr, ASTVarDecExpr, Mutability, Publicity,
 };
 use crate::color::{
-    Color, BLUE_COLOR, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, SUBTEXT_COLOR,
+    c, BLUE_COLOR, BOLD, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, RESET, SUBTEXT_COLOR,
     YELLOW_COLOR,
 };
-use crate::debug;
 
+// ---------------------------------------------------------------------------
+// Walk functions
+// ---------------------------------------------------------------------------
+
+/// Dispatches a statement node to the appropriate visitor method.
+///
+/// This is the default traversal logic for [`ASTVisitor::visit_stmt`]. Implementors
+/// can call this from their own `visit_stmt` override to retain default behaviour
+/// while adding pre- or post-processing.
 pub fn walk_stmt<V: ASTVisitor + ?Sized>(v: &mut V, stmt: &ASTStmt) -> Result<(), V::Error> {
     match &stmt.kind {
         ASTStmtKind::Expr(expr) => v.visit_expr(expr),
-        ASTStmtKind::Return(expr) => v.visit_expr(expr),
+        // ASTStmtKind::Return(expr) => v.visit_expr(expr),
         ASTStmtKind::VarDec(expr) => v.visit_var_dec(expr),
         ASTStmtKind::ConstDec(expr) => v.visit_const_dec(expr),
         ASTStmtKind::StructDec(expr) => v.visit_struct_dec(expr),
@@ -33,6 +40,11 @@ pub fn walk_stmt<V: ASTVisitor + ?Sized>(v: &mut V, stmt: &ASTStmt) -> Result<()
     }
 }
 
+/// Dispatches an expression node to the appropriate visitor method.
+///
+/// This is the default traversal logic for [`ASTVisitor::visit_expr`]. Implementors
+/// can call this from their own `visit_expr` override to retain default behaviour
+/// while adding pre- or post-processing.
 pub fn walk_expr<V: ASTVisitor + ?Sized>(v: &mut V, expr: &ASTExpr) -> Result<(), V::Error> {
     match &expr.kind {
         ASTExprKind::Integer(_)
@@ -63,12 +75,18 @@ pub fn walk_expr<V: ASTVisitor + ?Sized>(v: &mut V, expr: &ASTExpr) -> Result<()
 }
 
 // ---------------------------------------------------------------------------
-// Hilfsfunktionen
+// Helpers
 // ---------------------------------------------------------------------------
 
+/// A buffer of spaces used by [`write_spaces`] to avoid repeated allocations
+/// when writing indentation.
 const SPACES: [u8; 256] = [b' '; 256];
+
+/// Number of spaces added per indentation level.
 const INDENT_SIZE: usize = 4;
 
+/// Writes `count` space characters to `out` using a fixed-size buffer,
+/// avoiding repeated small writes.
 fn write_spaces(out: &mut impl Write, count: usize) -> io::Result<()> {
     let mut remaining = count;
     while remaining > 0 {
@@ -79,6 +97,8 @@ fn write_spaces(out: &mut impl Write, count: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Writes a string literal to `out` with common escape sequences applied
+/// (`\n`, `\r`, `\t`, `\\`, `\"`).
 fn escape_string(out: &mut impl Write, s: &str) -> io::Result<()> {
     for c in s.chars() {
         match c {
@@ -93,6 +113,8 @@ fn escape_string(out: &mut impl Write, s: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Writes a character literal to `out` with common escape sequences applied
+/// (`\n`, `\r`, `\t`, `\\`, `\'`).
 fn escape_char(out: &mut impl Write, c: char) -> io::Result<()> {
     match c {
         '\n' => out.write_all(b"\\n"),
@@ -104,20 +126,23 @@ fn escape_char(out: &mut impl Write, c: char) -> io::Result<()> {
     }
 }
 
-fn format_type(ty: &ASTType) -> String {
+/// Renders an [`ASTType`] node as a coloured string suitable for terminal output.
+///
+/// The returned `String` uses ANSI escape codes from the `color` module and is
+/// intended to be embedded directly in [`format_args!`] calls inside the printer.
+fn format_type(ty: &ASTType, col: &Colors) -> String {
     match ty {
-        ASTType::Path(n) => format!("{}{}{}", YELLOW_COLOR, n, Color::ResetAll),
+        ASTType::Path(n) => format!("{}{}{}", col.yellow, n, col.reset),
         ASTType::QualifiedPath(ids) => {
             let mut s = String::new();
             for (i, id) in ids.iter().enumerate() {
                 if i > 0 {
-                    s.push_str(&format!("{}:{}", SUBTEXT_COLOR, Color::ResetAll));
+                    s.push_str(&format!("{}:{}", col.subtext, col.reset));
                 }
-
                 if ["pkg", "super"].contains(&id.as_ref()) {
-                    s.push_str(&format!("{}{}{}", LAVENDAR_COLOR, id, Color::ResetAll));
+                    s.push_str(&format!("{}{}{}", col.lavender, id, col.reset));
                 } else {
-                    s.push_str(&format!("{}{}{}", YELLOW_COLOR, id, Color::ResetAll));
+                    s.push_str(&format!("{}{}{}", col.yellow, id, col.reset));
                 }
             }
             s
@@ -126,48 +151,39 @@ fn format_type(ty: &ASTType) -> String {
             if *mutable == Mutability::Mutable {
                 format!(
                     "{}&mut{} {}",
-                    LAVENDAR_COLOR,
-                    Color::ResetAll,
-                    format_type(inner)
+                    col.lavender,
+                    col.reset,
+                    format_type(inner, col)
                 )
             } else {
-                format!(
-                    "{}&{}{}",
-                    LAVENDAR_COLOR,
-                    Color::ResetAll,
-                    format_type(inner)
-                )
+                format!("{}&{}{}", col.lavender, col.reset, format_type(inner, col))
             }
         }
         ASTType::Tuple(elems) => {
             let inner = elems
                 .iter()
-                .map(format_type)
+                .map(|t| format_type(t, col))
                 .collect::<Vec<_>>()
-                .join(&format!("{},{} ", SUBTEXT_COLOR, Color::ResetAll));
+                .join(&format!("{},{} ", col.subtext, col.reset));
             format!(
                 "{}({}{}{}){}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                inner,
-                SUBTEXT_COLOR,
-                Color::ResetAll
+                col.subtext, col.reset, inner, col.subtext, col.reset
             )
         }
         ASTType::Generic { base, args } => {
             let args_s = args
                 .iter()
-                .map(format_type)
+                .map(|t| format_type(t, col))
                 .collect::<Vec<_>>()
-                .join(&format!("{},{} ", SUBTEXT_COLOR, Color::ResetAll));
+                .join(&format!("{},{} ", col.subtext, col.reset));
             format!(
                 "{}{}<{}{}{}>{}",
-                format_type(base),
-                SUBTEXT_COLOR,
-                Color::ResetAll,
+                format_type(base, col),
+                col.subtext,
+                col.reset,
                 args_s,
-                SUBTEXT_COLOR,
-                Color::ResetAll
+                col.subtext,
+                col.reset
             )
         }
         ASTType::Error => "<error>".to_string(),
@@ -175,80 +191,237 @@ fn format_type(ty: &ASTType) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Visitor-Trait
+// ASTVisitor trait
 // ---------------------------------------------------------------------------
 
+/// A visitor over the AWH abstract syntax tree.
+///
+/// Each method corresponds to a single AST node kind. The default implementations
+/// of [`visit_stmt`](ASTVisitor::visit_stmt) and [`visit_expr`](ASTVisitor::visit_expr)
+/// delegate to [`walk_stmt`] and [`walk_expr`] respectively, which in turn call the
+/// more specific `visit_*` methods. Override only what you need.
+///
+/// # Errors
+///
+/// Every method returns `Result<(), Self::Error>`. Returning `Err` aborts the
+/// current traversal path — the caller is responsible for deciding whether to
+/// propagate or recover.
 pub trait ASTVisitor {
+    /// The error type produced by this visitor.
     type Error;
 
+    /// Visits a top-level statement node.
+    ///
+    /// The default implementation delegates to [`walk_stmt`].
     fn visit_stmt(&mut self, stmt: &ASTStmt) -> Result<(), Self::Error> {
         walk_stmt(self, stmt)
     }
 
+    /// Visits an expression node.
+    ///
+    /// The default implementation delegates to [`walk_expr`].
     fn visit_expr(&mut self, expr: &ASTExpr) -> Result<(), Self::Error> {
         walk_expr(self, expr)
     }
 
-    fn visit_publicity(&mut self, vis: &Publicity) -> Result<(), Self::Error>;
+    /// Returns a human-readable string representation of a [`Publicity`] value.
+    ///
+    /// Returns `"0x1 (true)"` for [`Publicity::Public`] and `"0x0 (false)"` otherwise.
+    /// The return value is `&'static str` so it can be embedded into `format_args!`
+    /// without allocation.
+    fn publicity_str(&self, vis: &Publicity) -> &'static str;
+
+    /// Visits a list of generic type parameter definitions (e.g. `<T, U = Default>`).
+    ///
+    /// The list may be empty; implementations should handle that case gracefully.
     fn visit_generics(
         &mut self,
         generics: &SmallVec<[ASTGenericParam; 2]>,
     ) -> Result<(), Self::Error>;
+
+    /// Visits a local variable declaration (`dec [mut] name [: Type] = expr;`).
     fn visit_var_dec(&mut self, expr: &ASTVarDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits a constant declaration (`const name [: Type] = expr;`).
     fn visit_const_dec(&mut self, expr: &ASTConstDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits the named fields of a labelled struct.
     fn visit_struct_fields(
         &mut self,
         fields: &SmallVec<[ASTStructField; 4]>,
     ) -> Result<(), Self::Error>;
+
+    /// Visits the positional fields of a tuple struct.
     fn visit_tuple_struct_fields(
         &mut self,
         fields: &SmallVec<[ASTTupleStructField; 4]>,
     ) -> Result<(), Self::Error>;
+
+    /// Visits a labelled struct declaration (`struct Name { ... }`).
     fn visit_struct_dec(&mut self, expr: &ASTStructDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits a tuple struct declaration (`struct Name(Type, ...);`).
     fn visit_tuple_struct_dec(&mut self, expr: &ASTTupleStructDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits a unit struct declaration (`struct Name;`).
     fn visit_unit_struct_dec(&mut self, expr: &ASTUnitStructDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits an enum declaration (`enum Name { ... }`).
     fn visit_enum_dec(&mut self, expr: &ASTEnumDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits the list of variants inside an enum declaration.
     fn visit_enum_variants(
         &mut self,
         variants: &SmallVec<[ASTEnumVariant; 4]>,
     ) -> Result<(), Self::Error>;
+
+    /// Visits a type alias declaration (`type Name = Type;`).
     fn visit_type_alias(&mut self, expr: &ASTTypeAliasDecExpr) -> Result<(), Self::Error>;
 
+    /// Visits a binary expression (`lhs op rhs`).
+    ///
+    /// The default implementation visits the left operand first, then the right.
     fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) -> Result<(), Self::Error> {
         self.visit_expr(&expr.left)?;
         self.visit_expr(&expr.right)
     }
 
+    /// Visits a parenthesized expression (`(expr)`).
     fn visit_paren_expr(&mut self, expr: &ASTParenExpr) -> Result<(), Self::Error>;
+
+    /// Visits an assignment expression (`name op= expr`).
     fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) -> Result<(), Self::Error>;
+
+    /// Visits a unary expression (`op expr`).
     fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) -> Result<(), Self::Error>;
+
+    /// Visits a type cast expression (`expr as Type`).
     fn visit_cast_expr(&mut self, expr: &ASTCastExpr) -> Result<(), Self::Error>;
+
+    /// Visits a block expression (`{ stmts... [tail] }`).
     fn visit_block_expr(&mut self, expr: &ASTBlockExpr) -> Result<(), Self::Error>;
+
+    /// Visits a field access expression (`expr.field`).
     fn visit_field_access(&mut self, expr: &ASTFieldAccessExpr) -> Result<(), Self::Error>;
+
+    /// Visits a method call expression (`expr.method(args...)`).
     fn visit_method_call(&mut self, expr: &ASTMethodCallExpr) -> Result<(), Self::Error>;
+
+    /// Visits a free function call expression (`expr(args...)`).
     fn visit_call(&mut self, expr: &ASTCallExpr) -> Result<(), Self::Error>;
+
+    /// Visits an index expression (`expr[idx]`).
     fn visit_index(&mut self, expr: &ASTIndexExpr) -> Result<(), Self::Error>;
+
+    /// Visits a path segment expression (`expr::segment`).
     fn visit_path_segment(&mut self, expr: &ASTPathSegmentExpr) -> Result<(), Self::Error>;
+
+    /// Visits a macro invocation (`name!(args...)`).
     fn visit_macro_call(&mut self, expr: &ASTMacroCallExpr) -> Result<(), Self::Error>;
+
+    /// Visits a tuple literal expression (`(a, b, ...)`).
     fn visit_tuple(&mut self, expr: &ASTTupleExpr) -> Result<(), Self::Error>;
+
+    /// Visits the unit literal `()`.
     fn visit_unit(&mut self) -> Result<(), Self::Error>;
+
+    /// Visits an error node produced by the parser when recovery occurred.
     fn visit_error(&mut self) -> Result<(), Self::Error>;
+
+    /// Visits a type annotation node.
     fn visit_type(&mut self, ty: &ASTType) -> Result<(), Self::Error>;
+
+    /// Visits a primitive-valued expression (integer, float, byte, char, string,
+    /// byte string, bool, or variable reference).
+    ///
+    /// `kind` is guaranteed to be one of the value variants; any other variant
+    /// will cause the default implementation to panic via `unreachable!()`.
     fn visit_valued(&mut self, kind: &ASTExprKind) -> Result<(), Self::Error>;
+}
+
+// ---------------------------------------------------------------------------
+// LineKind
+// ---------------------------------------------------------------------------
+
+/// Controls which indentation style is used when writing a line.
+///
+/// - [`Normal`](LineKind::Normal) writes a leading `  - ` bullet marker at the
+///   current indent level, used for tree nodes.
+/// - [`Sub`](LineKind::Sub) writes plain leading spaces, used for properties and
+///   annotations that belong to the preceding node.
+#[derive(Clone, Copy)]
+pub enum LineKind {
+    /// Tree-node line: indented with a `  - ` bullet prefix.
+    Normal,
+    /// Property line: indented with plain spaces, no bullet.
+    Sub,
+}
+
+/// Saves the color value if color is activated.
+pub struct Colors {
+    pub blue: &'static str,
+    pub green: &'static str,
+    pub red: &'static str,
+    pub yellow: &'static str,
+    pub lavender: &'static str,
+    pub peach: &'static str,
+    pub subtext: &'static str,
+    pub bold: &'static str,
+    pub reset: &'static str,
+}
+
+impl Colors {
+    pub fn new() -> Self {
+        Self {
+            blue: c(BLUE_COLOR),
+            green: c(GREEN_COLOR),
+            red: c(RED_COLOR),
+            yellow: c(YELLOW_COLOR),
+            lavender: c(LAVENDAR_COLOR),
+            peach: c(PEACH_COLOR),
+            subtext: c(SUBTEXT_COLOR),
+            bold: c(BOLD),
+            reset: c(RESET),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // ASTPrinter
 // ---------------------------------------------------------------------------
 
+/// A pretty-printer that walks the AST and writes a coloured, indented tree
+/// representation to an arbitrary [`Write`] sink.
+///
+/// Each node is printed as a labelled bullet point; child nodes are indented by
+/// [`INDENT_SIZE`] spaces. ANSI colour codes from the `color` module are used to
+/// distinguish node kinds, identifiers, types, and literals.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut out = std::io::stdout();
+/// let mut printer = ASTPrinter {
+///     indent: 0,
+///     out: &mut out,
+///     string_pool: &pool,
+/// };
+/// printer.visit_stmt(&stmt)?;
+/// ```
 pub struct ASTPrinter<'a, W: Write> {
+    /// Current indentation depth in spaces.
     pub indent: usize,
+    /// Output sink where the formatted tree is written.
     pub out: &'a mut W,
+    /// String pool used to resolve interned identifiers back to their source text.
     pub string_pool: &'a StringPool,
+    /// Colors
+    pub color: Colors,
 }
 
 impl<'a, W: Write> ASTPrinter<'a, W> {
-    /// Erhöht den Indent, führt `f` aus, verringert ihn wieder – auch bei Fehler.
+    /// Increases the indentation level, executes `f`, then restores the original
+    /// level — even if `f` returns an error.
     fn indented<F>(&mut self, f: F) -> io::Result<()>
     where
         F: FnOnce(&mut Self) -> io::Result<()>,
@@ -259,6 +432,9 @@ impl<'a, W: Write> ASTPrinter<'a, W> {
         result
     }
 
+    /// Writes the bullet-style indent prefix (`  - `) for the current depth.
+    ///
+    /// Does nothing when `self.indent` is zero (top-level nodes).
     fn write_indent(&mut self) -> io::Result<()> {
         if self.indent > 0 {
             write_spaces(self.out, self.indent - INDENT_SIZE)?;
@@ -267,51 +443,61 @@ impl<'a, W: Write> ASTPrinter<'a, W> {
         Ok(())
     }
 
+    /// Writes plain leading spaces for the current indent depth (no bullet).
     fn write_indent_sub(&mut self) -> io::Result<()> {
         write_spaces(self.out, self.indent)
     }
 
+    /// Writes a line using either the bullet or plain indent style, determined by
+    /// `kind`. Appends a newline at the end.
+    fn write_line(&mut self, kind: LineKind, args: Arguments) -> io::Result<()> {
+        match kind {
+            LineKind::Normal => self.line(args),
+            LineKind::Sub => self.line_sub(args),
+        }
+    }
+
+    /// Writes a bullet-indented line followed by a newline.
     fn line(&mut self, args: Arguments) -> io::Result<()> {
         self.write_indent()?;
         self.out.write_fmt(args)?;
         self.out.write_all(b"\n")
     }
 
+    /// Writes a plain-indented line followed by a newline.
     fn line_sub(&mut self, args: Arguments) -> io::Result<()> {
         self.write_indent_sub()?;
         self.out.write_fmt(args)?;
         self.out.write_all(b"\n")
     }
 
-    /// Gibt ein farbiges Label aus: `SubtextColor <label> ResetAll :`
+    /// Writes a coloured section label as a bullet-indented line (e.g. `label:`).
     fn label(&mut self, label: &str) -> io::Result<()> {
-        self.line(format_args!(
-            "{}{}{}:",
-            SUBTEXT_COLOR,
-            label,
-            Color::ResetAll
-        ))
+        let (subtext, reset) = (self.color.subtext, self.color.reset);
+        self.write_line(
+            LineKind::Normal,
+            format_args!("{}{}{}:", subtext, label, reset),
+        )
     }
 
+    /// Writes a coloured section label as a plain-indented line (e.g. `label:`).
     fn label_sub(&mut self, label: &str) -> io::Result<()> {
-        self.line_sub(format_args!(
-            "{}{}{}:",
-            SUBTEXT_COLOR,
-            label,
-            Color::ResetAll
-        ))
+        let (subtext, reset) = (self.color.subtext, self.color.reset);
+        self.write_line(
+            LineKind::Normal,
+            format_args!("{}{}{}:", subtext, label, reset),
+        )
     }
 
-    /// Gibt eine Identifier-Zeile aus.
+    /// Writes an `name: '<value>'` line at the bullet indent level.
     fn ident_line(&mut self, name: &str) -> io::Result<()> {
-        self.line(format_args!(
-            "{}ident{}: '{}'",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            name
-        ))
+        let (subtext, reset) = (self.color.subtext, self.color.reset);
+        self.line(format_args!("{}name{}: '{}'", subtext, reset, name))
     }
 
+    /// Resolves a [`StringId`] to its source text using the printer's string pool.
+    ///
+    /// Returns `"<unknown>"` if the id is not present in the pool.
     fn get_name(&self, id: StringId) -> &str {
         self.string_pool.get(id).unwrap_or("<unknown>")
     }
@@ -323,7 +509,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     fn visit_stmt(&mut self, stmt: &ASTStmt) -> Result<(), Self::Error> {
         self.label("statement")?;
         self.indented(|s| walk_stmt(s, stmt))?;
-        writeln!(self.out) // vorher: println!() — jetzt korrekt auf self.out
+        writeln!(self.out)
     }
 
     fn visit_expr(&mut self, expr: &ASTExpr) -> Result<(), Self::Error> {
@@ -331,19 +517,12 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.indented(|s| walk_expr(s, expr))
     }
 
-    fn visit_publicity(&mut self, vis: &Publicity) -> Result<(), Self::Error> {
-        self.line_sub(format_args!(
-            "{}public{}: {}{}{}",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            RED_COLOR,
-            if *vis == Publicity::Public {
-                "0x1 (true)"
-            } else {
-                "0x0 (false)"
-            },
-            Color::ResetAll
-        ))
+    fn publicity_str(&self, vis: &Publicity) -> &'static str {
+        if *vis == Publicity::Public {
+            "0x1 (true)"
+        } else {
+            "0x0 (false)"
+        }
     }
 
     fn visit_generics(
@@ -354,26 +533,19 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
             return Ok(());
         }
         self.label_sub("generics")?;
-
         let ids: Vec<_> = generics.iter().map(|g| g.name.id).collect();
-
-        // ← NACHHER: in der Closure nur names[i] nutzen
         self.indented(|s| {
             for (i, generic) in generics.iter().enumerate() {
                 let name = s.get_name(ids[i]).to_owned();
                 match &generic.default {
                     Some(default) => {
-                        s.line(format_args!("{}", name))?; // ← names[i]!
-                        s.line_sub(format_args!(
-                            "{}def{}: {}{}{}",
-                            SUBTEXT_COLOR,
-                            Color::ResetAll,
-                            BLUE_COLOR,
-                            format_type(default),
-                            Color::ResetAll
+                        s.line(format_args!(
+                            "{} (def){}",
+                            name,
+                            format_type(default, &s.color)
                         ))?;
                     }
-                    None => s.line(format_args!("{}", name))?, // ← names[i]!
+                    None => s.line(format_args!("{}", name))?,
                 }
             }
             Ok(())
@@ -381,15 +553,12 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) -> Result<(), Self::Error> {
+        let (subtext, blue, reset) = (self.color.subtext, self.color.blue, self.color.reset);
         self.label("binary")?;
         self.indented(|s| {
             s.line(format_args!(
                 "{}operator{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                BLUE_COLOR,
-                expr.operator.kind,
-                Color::ResetAll
+                subtext, reset, blue, expr.operator.kind, reset
             ))?;
             s.visit_expr(&expr.left)?;
             s.visit_expr(&expr.right)
@@ -402,24 +571,22 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) -> Result<(), Self::Error> {
-        self.label("assignment")?;
+        let (subtext, lavendar, blue, reset) = (
+            self.color.subtext,
+            self.color.lavender,
+            self.color.blue,
+            self.color.reset,
+        );
         let name = self.get_name(expr.target.id).to_owned();
+        self.label("assignment")?;
         self.indented(|s| {
             s.line(format_args!(
                 "{}to{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
+                subtext, reset, lavendar, name, reset
             ))?;
             s.line(format_args!(
                 "{}operator{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                BLUE_COLOR,
-                expr.op,
-                Color::ResetAll
+                subtext, reset, blue, expr.op, reset
             ))?;
             s.visit_expr(&expr.value)
         })
@@ -434,21 +601,22 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_var_dec(&mut self, expr: &ASTVarDecExpr) -> Result<(), Self::Error> {
-        self.label("var_dec")?;
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         let name = self.get_name(expr.ident.id).to_owned();
+        self.label("var")?;
         self.indented(|s| {
             s.ident_line(&name)?;
             s.line_sub(format_args!(
                 "{}mutable{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
+                subtext,
+                reset,
+                red,
                 if expr.mut_ == Mutability::Mutable {
                     "0x1 (true)"
                 } else {
                     "0x0 (false)"
                 },
-                Color::ResetAll
+                reset
             ))?;
             if let Some(ty) = &expr.ty {
                 s.visit_type(ty)?;
@@ -458,12 +626,16 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_const_dec(&mut self, expr: &ASTConstDecExpr) -> Result<(), Self::Error> {
-        debug!("const decl: \n{:#?}", expr);
-        self.label("const_dec")?;
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         let name = self.get_name(expr.ident.id).to_owned();
+        self.label("const")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            s.visit_publicity(&expr.pub_)?;
+            let pub_ = s.publicity_str(&expr.pub_);
+            s.line(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))?;
             if let Some(ty) = &expr.ty {
                 s.visit_type(ty)?;
             }
@@ -475,10 +647,15 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         &mut self,
         fields: &SmallVec<[ASTStructField; 4]>,
     ) -> Result<(), Self::Error> {
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         for field in fields.iter() {
             let field_name = self.get_name(field.ident.id).to_owned();
             self.ident_line(&field_name)?;
-            self.visit_publicity(&field.pub_)?;
+            let pub_ = self.publicity_str(&field.pub_);
+            self.line_sub(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))?;
             self.visit_type(&field.ty)?;
         }
         Ok(())
@@ -488,19 +665,12 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         &mut self,
         fields: &SmallVec<[ASTTupleStructField; 4]>,
     ) -> Result<(), Self::Error> {
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         for field in fields.iter() {
-            // Erstes Feld mit "-" einleiten
+            let pub_ = self.publicity_str(&field.pub_);
             self.line(format_args!(
-                "{}public{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
-                if field.pub_ == Publicity::Public {
-                    "0x1 (true)"
-                } else {
-                    "0x0 (false)"
-                },
-                Color::ResetAll
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
             ))?;
             self.visit_type(&field.ty)?;
         }
@@ -508,12 +678,16 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_struct_dec(&mut self, expr: &ASTStructDecExpr) -> Result<(), Self::Error> {
-        debug!("struct decl: \n{:#?}", expr);
-        self.label("struct_dec")?;
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         let name = self.get_name(expr.ident.id).to_owned();
+        self.label("labeled struct")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            s.visit_publicity(&expr.pub_)?;
+            let pub_ = s.publicity_str(&expr.pub_);
+            s.line_sub(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))?;
             s.visit_generics(&expr.generics)?;
             s.label_sub("fields")?;
             s.indented(|s| s.visit_struct_fields(&expr.fields))
@@ -521,12 +695,16 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_tuple_struct_dec(&mut self, expr: &ASTTupleStructDecExpr) -> Result<(), Self::Error> {
-        debug!("tuple struct decl: \n{:#?}", expr);
-        self.label("tuple_struct_dec")?;
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         let name = self.get_name(expr.ident.id).to_owned();
+        self.label("tuple struct")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            s.visit_publicity(&expr.pub_)?;
+            let pub_ = s.publicity_str(&expr.pub_);
+            s.line(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))?;
             s.visit_generics(&expr.generics)?;
             s.label_sub("fields")?;
             s.indented(|s| s.visit_tuple_struct_fields(&expr.fields))
@@ -534,23 +712,32 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_unit_struct_dec(&mut self, expr: &ASTUnitStructDecExpr) -> Result<(), Self::Error> {
-        debug!("unit struct decl: \n{:#?}", expr);
-        self.label("unit_struct_dec")?;
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         let name = self.get_name(expr.ident.id).to_owned();
+        self.label("unit struct")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            s.visit_publicity(&expr.pub_)
+            let pub_ = s.publicity_str(&expr.pub_);
+            s.line(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))
         })
     }
 
     fn visit_enum_dec(&mut self, expr: &ASTEnumDecExpr) -> Result<(), Self::Error> {
-        debug!("enum decl: \n{:#?}", expr);
-        self.label("enum_dec")?;
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         let name = self.get_name(expr.ident.id).to_owned();
+        self.label("enum")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            s.visit_publicity(&expr.pub_)?;
+            let pub_ = s.publicity_str(&expr.pub_);
+            s.line(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))?;
             s.visit_generics(&expr.generics)?;
+            s.label_sub("fields")?;
             s.visit_enum_variants(&expr.variants)
         })
     }
@@ -563,23 +750,33 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
             return Ok(());
         }
         let ids: Vec<StringId> = variants.iter().map(|v| v.ident.id).collect();
+        let (subtext, blue, reset) = (self.color.subtext, self.color.blue, self.color.reset);
         self.label_sub("variants")?;
         self.indented(|s| {
             for (i, variant) in variants.iter().enumerate() {
                 let name = s.get_name(ids[i]).to_owned();
-                // ident auf aktueller Ebene mit "-"
                 s.ident_line(&name)?;
-                // Varianteninhalt auf gleicher Ebene (kein extra indented!)
                 match &variant.kind {
                     ASTEnumVariantKind::Unit => {
-                        s.line_sub(format_args!("{}unit{}", BLUE_COLOR, Color::ResetAll))?;
+                        s.line_sub(format_args!(
+                            "{}kind{}: {}unit{}",
+                            subtext, reset, blue, reset
+                        ))?;
                     }
                     ASTEnumVariantKind::Tuple(fields) => {
-                        s.label_sub("tuple")?;
+                        s.line_sub(format_args!(
+                            "{}kind{}: {}tupled{}",
+                            subtext, reset, blue, reset
+                        ))?;
+                        s.label_sub("fields")?;
                         s.indented(|s| s.visit_tuple_struct_fields(fields))?;
                     }
                     ASTEnumVariantKind::Struct(fields) => {
-                        s.label_sub("struct")?;
+                        s.line_sub(format_args!(
+                            "{}kind{}: {}labeled{}",
+                            subtext, reset, blue, reset
+                        ))?;
+                        s.label_sub("fields")?;
                         s.indented(|s| s.visit_struct_fields(fields))?;
                     }
                 }
@@ -589,12 +786,16 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_type_alias(&mut self, expr: &ASTTypeAliasDecExpr) -> Result<(), Self::Error> {
-        debug!("type alias decl: \n{:#?}", expr);
-        self.label("type_alias_dec")?;
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         let name = self.get_name(expr.ident.id).to_owned();
+        self.label("type alias")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            s.visit_publicity(&expr.pub_)?;
+            let pub_ = s.publicity_str(&expr.pub_);
+            s.line(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))?;
             s.visit_generics(&expr.generics)?;
             s.visit_type(&expr.ty)
         })
@@ -615,32 +816,28 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_field_access(&mut self, expr: &ASTFieldAccessExpr) -> Result<(), Self::Error> {
-        self.label("field_access")?;
+        let (subtext, lavendar, reset) =
+            (self.color.subtext, self.color.lavender, self.color.reset);
+        self.label("field access")?;
         self.indented(|s| {
             let name = s.get_name(expr.field.id).to_owned();
             s.line(format_args!(
                 "{}field{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
+                subtext, reset, lavendar, name, reset
             ))?;
             s.visit_expr(expr.expr.as_ref())
         })
     }
 
     fn visit_method_call(&mut self, expr: &ASTMethodCallExpr) -> Result<(), Self::Error> {
-        self.label("method_call")?;
+        let (subtext, lavendar, reset) =
+            (self.color.subtext, self.color.lavender, self.color.reset);
+        self.label("method call")?;
         self.indented(|s| {
             let name = s.get_name(expr.method.id).to_owned();
             s.line(format_args!(
                 "{}method{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
+                subtext, reset, lavendar, name, reset
             ))?;
             s.label("receiver")?;
             s.indented(|s| s.visit_expr(expr.expr.as_ref()))?;
@@ -676,42 +873,37 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_index(&mut self, expr: &ASTIndexExpr) -> Result<(), Self::Error> {
-        self.label("undexed")?;
+        self.label("index")?;
         self.indented(|s| {
             s.label("expr")?;
             s.indented(|s| s.visit_expr(expr.expr.as_ref()))?;
-            s.label("index")?;
+            s.label("idx")?;
             s.indented(|s| s.visit_expr(expr.index.as_ref()))
         })
     }
 
     fn visit_path_segment(&mut self, expr: &ASTPathSegmentExpr) -> Result<(), Self::Error> {
-        self.label("path_segment")?;
+        let (subtext, lavendar, reset) =
+            (self.color.subtext, self.color.lavender, self.color.reset);
+        self.label("path segment")?;
         self.indented(|s| {
             s.visit_expr(expr.expr.as_ref())?;
             let name = s.get_name(expr.segment.id).to_owned();
             s.line(format_args!(
                 "{}segment{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
+                subtext, reset, lavendar, name, reset
             ))?;
             Ok(())
         })
     }
 
     fn visit_macro_call(&mut self, expr: &ASTMacroCallExpr) -> Result<(), Self::Error> {
-        self.label("macro_call")?;
+        let (lavendar, blue, reset) = (self.color.lavender, self.color.blue, self.color.reset);
+        self.label("macro call")?;
         self.indented(|s| {
             s.line(format_args!(
                 "{}name{}: {}{}!{}",
-                BLUE_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                expr.name,
-                Color::ResetAll
+                blue, reset, lavendar, &expr.name, reset
             ))?;
             if !expr.args.is_empty() {
                 s.label("args")?;
@@ -737,126 +929,81 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_unit(&mut self) -> Result<(), Self::Error> {
-        self.line_sub(format_args!("{}unit{}", BLUE_COLOR, Color::ResetAll))
+        let (blue, reset) = (self.color.blue, self.color.reset);
+        self.line_sub(format_args!("{}unit{}", blue, reset))
     }
 
     fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) -> Result<(), Self::Error> {
         self.label("unary")?;
+        let (subtext, blue, reset) = (self.color.subtext, self.color.blue, self.color.reset);
         self.indented(|s| {
             s.line(format_args!(
                 "{}operator{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                BLUE_COLOR,
-                expr.op.kind,
-                Color::ResetAll
+                subtext, reset, blue, expr.op.kind, reset
             ))?;
             s.visit_expr(&expr.expr)
         })
     }
 
     fn visit_type(&mut self, ty: &ASTType) -> Result<(), Self::Error> {
-        let s = format_type(ty);
-        self.line_sub(format_args!(
-            "{}type{}: {}",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            s,
-        ))
+        let (subtext, reset) = (self.color.subtext, self.color.reset);
+        let s = format_type(ty, &self.color);
+        self.line_sub(format_args!("{}type{}: {}", subtext, reset, s))
     }
 
     fn visit_error(&mut self) -> Result<(), Self::Error> {
-        self.line(format_args!(
-            "{}{}ERROR{}",
-            Color::Bold,
-            RED_COLOR,
-            Color::ResetAll
-        ))
+        let (bold, red, reset) = (self.color.bold, self.color.red, self.color.reset);
+        self.line(format_args!("{}{}ERROR{}", bold, red, reset))
     }
 
     fn visit_valued(&mut self, kind: &ASTExprKind) -> Result<(), Self::Error> {
+        let (bl, pc, gr, rd, lv, rs) = (
+            self.color.blue,
+            self.color.peach,
+            self.color.green,
+            self.color.red,
+            self.color.lavender,
+            self.color.reset,
+        );
         match kind {
-            ASTExprKind::Integer(v) => self.line_sub(format_args!(
-                "{}int{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                PEACH_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            ASTExprKind::Float(v) => self.line_sub(format_args!(
-                "{}float{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                PEACH_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            ASTExprKind::Byte(v) => self.line_sub(format_args!(
-                "{}byte{}({}{:02X}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                PEACH_COLOR,
-                v,
-                Color::ResetAll
-            )),
+            ASTExprKind::Integer(v) => {
+                self.line_sub(format_args!("{}int{}({}{}{})", bl, rs, pc, v, rs))
+            }
+            ASTExprKind::Float(v) => {
+                self.line_sub(format_args!("{}float{}({}{}{})", bl, rs, pc, v, rs))
+            }
+            ASTExprKind::Byte(v) => {
+                self.line_sub(format_args!("{}byte{}({}{:02X}{})", bl, rs, pc, v, rs))
+            }
             ASTExprKind::Char(c) => {
                 self.write_indent_sub()?;
-                write!(
-                    self.out,
-                    "{}char{}({}",
-                    BLUE_COLOR,
-                    Color::ResetAll,
-                    GREEN_COLOR
-                )?;
+                write!(self.out, "{}char{}({}", bl, rs, gr)?;
                 escape_char(self.out, *c)?;
-                writeln!(self.out, "{})", Color::ResetAll)
+                writeln!(self.out, "{})", rs)
             }
             ASTExprKind::String(s) => {
                 self.write_indent_sub()?;
-                write!(
-                    self.out,
-                    "{}string{}({}",
-                    BLUE_COLOR,
-                    Color::ResetAll,
-                    GREEN_COLOR
-                )?;
+                write!(self.out, "{}string{}({}", bl, rs, gr)?;
                 escape_string(self.out, s)?;
-                writeln!(self.out, "{})", Color::ResetAll)
+                writeln!(self.out, "{})", rs)
             }
             ASTExprKind::ByteString(b) => {
                 self.write_indent_sub()?;
-                write!(
-                    self.out,
-                    "{}byte_string{}[{}",
-                    BLUE_COLOR,
-                    Color::ResetAll,
-                    PEACH_COLOR
-                )?;
+                write!(self.out, "{}byte string{}[{}", bl, rs, pc)?;
                 for (i, byte) in b.iter().enumerate() {
                     if i > 0 {
                         write!(self.out, ", ")?;
                     }
                     write!(self.out, "{:02X}", byte)?;
                 }
-                writeln!(self.out, "{}]", Color::ResetAll)
+                writeln!(self.out, "{}]", rs)
             }
-            ASTExprKind::Bool(v) => self.line_sub(format_args!(
-                "{}bool{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            ASTExprKind::Variable(n) => self.line_sub(format_args!(
-                "{}var{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                n,
-                Color::ResetAll
-            )),
+            ASTExprKind::Bool(v) => {
+                self.line_sub(format_args!("{}bool{}({}{}{})", bl, rs, rd, v, rs))
+            }
+            ASTExprKind::Variable(n) => {
+                self.line_sub(format_args!("{}var{}({}{}{})", bl, rs, lv, n, rs))
+            }
             _ => unreachable!(),
         }
     }

@@ -1,73 +1,46 @@
-use std::fmt::{Display, Formatter, Result};
+use std::{fmt::{Display, Formatter, Result}, sync::atomic::Ordering};
+use const_format::concatcp;
 
-pub const MAUVE_COLOR: Color = Color::FgHex("#cba6f7");
-pub const LAVENDAR_COLOR: Color = Color::FgHex("#aa9beb");
-pub const BLUE_COLOR: Color = Color::FgHex("#7FB0FF");
-pub const GREEN_COLOR: Color = Color::FgHex("#a6e3a1");
-pub const CYAN_COLOR: Color = Color::FgHex("#86e6c9");
-pub const PEACH_COLOR: Color = Color::FgHex("#fab387");
-pub const YELLOW_COLOR: Color = Color::FgHex("#ffdba2");
-pub const FLAMINGO_COLOR: Color = Color::FgHex("#ebc1c1");
-pub const MAROON_COLOR: Color = Color::FgHex("#eba0ac");
-pub const RED_COLOR: Color = Color::FgHex("#ff9091");
-pub const SUBTEXT_COLOR: Color = Color::FgHex("#a6adc8");
+use crate::args::COLOR_ENABLE;
 
-#[derive(Copy, Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-pub enum Color {
-    ResetFg,
-    ResetBg,
-    ResetBold,
-    ResetItalic,
-    ResetUnderline,
-    ResetStrikethrough,
-    ResetAll,
-    Bold,
-    Italic,
-    Underlined,
-    Strikethrough,
-    FgHex(&'static str),
-    BgHex(&'static str),
-    FgRGB(u8, u8, u8),
-    BgRGB(u8, u8, u8),
+pub const MAUVE_COLOR:    &str = concatcp!("\x1b[38;2;", 203u8, ";", 166u8, ";", 247u8, "m");
+pub const LAVENDAR_COLOR: &str = concatcp!("\x1b[38;2;", 170u8, ";", 155u8, ";", 235u8, "m");
+pub const BLUE_COLOR:     &str = concatcp!("\x1b[38;2;", 127u8, ";", 176u8, ";", 255u8, "m");
+pub const GREEN_COLOR:    &str = concatcp!("\x1b[38;2;", 166u8, ";", 227u8, ";", 161u8, "m");
+pub const CYAN_COLOR:     &str = concatcp!("\x1b[38;2;", 134u8, ";", 230u8, ";", 201u8, "m");
+pub const PEACH_COLOR:    &str = concatcp!("\x1b[38;2;", 250u8, ";", 179u8, ";", 135u8, "m");
+pub const YELLOW_COLOR:   &str = concatcp!("\x1b[38;2;", 255u8, ";", 219u8, ";", 162u8, "m");
+pub const FLAMINGO_COLOR: &str = concatcp!("\x1b[38;2;", 235u8, ";", 193u8, ";", 193u8, "m");
+pub const MAROON_COLOR:   &str = concatcp!("\x1b[38;2;", 235u8, ";", 160u8, ";", 172u8, "m");
+pub const RED_COLOR:      &str = concatcp!("\x1b[38;2;", 255u8, ";", 144u8, ";", 145u8, "m");
+pub const SUBTEXT_COLOR:  &str = concatcp!("\x1b[38;2;", 166u8, ";", 173u8, ";", 200u8, "m");
+
+pub const BOLD:           &str = "\x1b[1m";
+pub const ITALIC:         &str = "\x1b[3m";
+pub const UNDERLINED:     &str = "\x1b[4m";
+pub const STRIKETHROUGH:  &str = "\x1b[9m";
+
+pub const RESET:                &str = "\x1b[0m";
+pub const RESET_FG:             &str = "\x1b[39m";
+pub const RESET_BG:             &str = "\x1b[49m";
+
+pub const RESET_BOLD:           &str = "\x1b[22m";
+pub const RESET_ITALIC:         &str = "\x1b[23m";
+pub const RESET_UNDERLINE:      &str = "\x1b[24m";
+pub const RESET_STRIKETHROUGH:  &str = "\x1b[29m";
+
+pub fn fg_rgb(r: u8, g: u8, b: u8) -> String {
+    format!("\x1b[38;2;{r};{g};{b}m")
 }
 
-impl Display for Color {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        match self {
-            Color::ResetFg => write!(f, "\x1b[39m"),
-            Color::ResetBg => write!(f, "\x1b[49m"),
-            Color::ResetBold => write!(f, "\x1b[22m"),
-            Color::ResetItalic => write!(f, "\x1b[23m"),
-            Color::ResetUnderline => write!(f, "\x1b[24m"),
-            Color::ResetStrikethrough => write!(f, "\x1b[29m"),
-            Color::ResetAll => write!(f, "\x1b[0m"),
-            Color::Bold => write!(f, "\x1b[1m"),
-            Color::Italic => write!(f, "\x1b[3m"),
-            Color::Underlined => write!(f, "\x1b[4m"),
-            Color::Strikethrough => write!(f, "\x1b[9m"),
-            Color::FgHex(hex) | Color::BgHex(hex) => {
-                // check sequence
-                if hex.len() == 7 && hex.starts_with('#') {
-                    // parse R, G, B
-                    if let (Ok(r), Ok(g), Ok(b)) = (
-                        u8::from_str_radix(&hex[1..3], 16),
-                        u8::from_str_radix(&hex[3..5], 16),
-                        u8::from_str_radix(&hex[5..7], 16),
-                    ) {
-                        return match self {
-                            Color::FgHex(_) => write!(f, "\x1b[38;2;{};{};{}m", r, g, b),
-                            Color::BgHex(_) => write!(f, "\x1b[48;2;{};{};{}m", r, g, b),
-                            _ => unreachable!(),
-                        };
-                    }
-                }
-                // Fallback
-                write!(f, "\x1b[0m")
-            }
-            Color::FgRGB(r, g, b) => write!(f, "\x1b[38;2;{};{};{}m", r, g, b),
-            Color::BgRGB(r, g, b) => write!(f, "\x1b[48;2;{};{};{}m", r, g, b),
-        }
+pub fn bg_rgb(r: u8, g: u8, b: u8) -> String {
+    format!("\x1b[48;2;{r};{g};{b}m")
+}
+
+pub fn c(color: &'static str) -> &'static str {
+    if COLOR_ENABLE.load(Ordering::Relaxed) {
+        color
+    } else {
+        ""
     }
 }
