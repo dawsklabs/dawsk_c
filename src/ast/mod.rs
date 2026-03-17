@@ -1,48 +1,59 @@
 pub mod lexer;
 pub mod parser;
-pub mod scope;
+// pub mod scope;
 pub mod token;
-pub mod traits;
-pub mod typechecker;
+// pub mod traits;
+pub mod visitor;
+// pub mod typechecker;
+pub mod strings;
 
-use std::fmt::{Display, Formatter, Result};
-use std::io::{self, Write};
+use std::fmt::{self, Display, Formatter};
+use std::io;
+use std::result::Result;
 
-use crate::color::{
-    Color, BLUE_COLOR, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, SUBTEXT_COLOR,
-};
+use crate::ast::strings::{StringId, StringPool};
+use crate::ast::visitor::{ASTPrinter, ASTVisitor};
 use crate::source::Span;
-use crate::types::Ty;
-use token::{Token, TokenKind};
+use smallvec::SmallVec;
+use token::TokenKind;
+
+// use crate::ast::scope::NameId;
 
 pub struct AST {
     pub items: Vec<ASTItem>,
+    pub strings: StringPool,
 }
 
 impl AST {
     pub fn new() -> Self {
-        Self { items: Vec::new() }
+        Self {
+            items: Vec::new(),
+            strings: StringPool::new(),
+        }
     }
 
     pub fn add_item(&mut self, item: ASTItem) {
         self.items.push(item);
     }
 
-    pub fn visit(&self, visitor: &mut dyn ASTVisitor) -> io::Result<()> {
+    pub fn visit<V: ASTVisitor>(&self, visitor: &mut V) -> Result<(), V::Error> {
         for item in &self.items {
             match item {
                 ASTItem::Stmt(stmt) => visitor.visit_stmt(stmt)?,
-                _ => todo!(),
+                ASTItem::Use(_) => {}
+                ASTItem::Mod(_) => {}
             }
         }
+
         Ok(())
     }
 
-    pub fn visualize(&self) {
+    pub fn visualize(&self, string_pool: &StringPool) {
         let mut output = io::stdout();
         let mut printer = ASTPrinter {
             indent: 0,
             out: &mut output,
+            string_pool,
         };
         let _ = self.visit(&mut printer);
     }
@@ -66,604 +77,17 @@ pub struct ASTMod {
     pub name: String,
 }
 
-pub trait ASTVisitor {
-    fn do_visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
-        match &stmt.kind {
-            ASTStmtKind::Expr(expr) => self.visit_expr(expr),
-            ASTStmtKind::Return(_ret) => todo!(),
-            ASTStmtKind::VarDec(dec) => self.visit_var_dec(dec),
-            ASTStmtKind::StructDec(dec) => self.visit_struct_dec(dec),
-            ASTStmtKind::TupleStructDec(dec) => self.visit_tuple_struct_dec(dec),
-        }
-    }
-
-    fn visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
-        let _ = self.do_visit_stmt(stmt);
-        Ok(())
-    }
-
-    fn do_visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
-        match expr.kind.as_ref() {
-            ASTExprKind::Integer(_)
-            | ASTExprKind::Float(_)
-            | ASTExprKind::Byte(_)
-            | ASTExprKind::Char(_)
-            | ASTExprKind::String(_)
-            | ASTExprKind::ByteString(_)
-            | ASTExprKind::Bool(_)
-            | ASTExprKind::Variable(_) => {
-                let _ = self.visit_valued(expr.kind.as_ref());
-                Ok(())
-            }
-            ASTExprKind::Unary(unary) => self.visit_unary_expr(&unary),
-            ASTExprKind::Binary(bin) => self.visit_binary_expr(&bin),
-            ASTExprKind::Parenthesized(expr) => self.visit_paren_expr(&expr),
-            ASTExprKind::Assignment(expr) => self.visit_assignment_expr(expr),
-            ASTExprKind::Cast(expr) => self.visit_cast_expr(expr),
-            ASTExprKind::Block(block) => self.visit_block_expr(block),
-            ASTExprKind::Error => self.visit_error(),
-        }
-    }
-
-    fn visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
-        let _ = self.do_visit_expr(expr);
-        Ok(())
-    }
-
-    fn visit_var_dec(&mut self, expr: &ASTVarDecExpr) -> io::Result<()>;
-
-    fn visit_struct_dec(&mut self, expr: &ASTStructDecExpr) -> io::Result<()>;
-
-    fn visit_tuple_struct_dec(&mut self, expr: &ASTTupleStructDecExpr) -> io::Result<()>;
-
-    fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) -> io::Result<()> {
-        let _ = self.visit_expr(&expr.left);
-        let _ = self.visit_expr(&expr.right);
-        Ok(())
-    }
-
-    fn visit_paren_expr(&mut self, expr: &ASTParenExpr) -> io::Result<()>;
-
-    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) -> io::Result<()>;
-
-    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) -> io::Result<()>;
-
-    fn visit_cast_expr(&mut self, expr: &ASTCastExpr) -> io::Result<()>;
-
-    fn visit_block_expr(&mut self, expr: &ASTBlockExpr) -> io::Result<()>;
-
-    fn visit_error(&mut self) -> io::Result<()>;
-
-    fn visit_valued(&mut self, kind: &ASTExprKind) -> io::Result<()>;
-}
-
-pub struct ASTPrinter<'a, W: Write> {
-    indent: usize,
-    out: &'a mut W,
-}
-
-const INDENT_SIZE: usize = 1;
-
-impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
-    fn visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
-        let _ = self.line(format_args!(
-            "{}Statement{}:",
-            SUBTEXT_COLOR,
-            Color::ResetAll
-        ));
-        self.indent += INDENT_SIZE;
-        let _ = ASTVisitor::do_visit_stmt(self, stmt);
-        self.indent -= INDENT_SIZE;
-        println!();
-        Ok(())
-    }
-
-    fn visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
-        let _ = self.line(format_args!(
-            "{}Expression{}:",
-            SUBTEXT_COLOR,
-            Color::ResetAll
-        ));
-        self.indent += INDENT_SIZE;
-        let _ = ASTVisitor::do_visit_expr(self, expr);
-        self.indent -= INDENT_SIZE;
-        Ok(())
-    }
-
-    fn visit_binary_expr(&mut self, expr: &ASTBinaryExpr) -> io::Result<()> {
-        let _ = self.line(format_args!("{}Binary{}:", SUBTEXT_COLOR, Color::ResetAll));
-        self.indent += INDENT_SIZE;
-        let _ = self.line(format_args!(
-            "{}Operator{}: {}{}{}",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            BLUE_COLOR,
-            expr.operator.kind,
-            Color::ResetAll
-        ));
-        let _ = self.visit_expr(&expr.left);
-        let _ = self.visit_expr(&expr.right);
-        self.indent -= INDENT_SIZE;
-        Ok(())
-    }
-
-    fn visit_paren_expr(&mut self, expr: &ASTParenExpr) -> io::Result<()> {
-        let _ = self.line(format_args!(
-            "{}Parenthesized{}:",
-            SUBTEXT_COLOR,
-            Color::ResetAll
-        ));
-        self.indent += INDENT_SIZE;
-        let _ = self.visit_expr(&expr.expr);
-        self.indent -= INDENT_SIZE;
-        Ok(())
-    }
-
-    fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) -> io::Result<()> {
-        if let TokenKind::Identifier(name) = &expr.target.kind {
-            let _ = self.line(format_args!(
-                "{}Assignment{}:",
-                SUBTEXT_COLOR,
-                Color::ResetAll
-            ));
-            self.indent += INDENT_SIZE;
-            let _ = self.line(format_args!(
-                "{}Name{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
-            ));
-            let _ = self.line(format_args!(
-                "{}Operator{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                BLUE_COLOR,
-                expr.op,
-                Color::ResetAll
-            ));
-            let _ = self.visit_expr(&expr.value);
-            self.indent -= INDENT_SIZE;
-        }
-        Ok(())
-    }
-
-    fn visit_cast_expr(&mut self, expr: &ASTCastExpr) -> io::Result<()> {
-        let _ = self.line(format_args!("{}Cast{}:", SUBTEXT_COLOR, Color::ResetAll));
-        self.indent += INDENT_SIZE;
-        let _ = self.line(format_args!(
-            "{}Type{}: {:?}",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            expr.target
-        ));
-        let _ = self.visit_expr(&expr.expr);
-        self.indent -= INDENT_SIZE;
-        Ok(())
-    }
-
-    fn visit_var_dec(&mut self, dec: &ASTVarDecExpr) -> io::Result<()> {
-        if let TokenKind::Identifier(name) = &dec.identifier.kind {
-            let _ = self.line(format_args!(
-                "{}Variable Declaration{}:",
-                SUBTEXT_COLOR,
-                Color::ResetAll
-            ));
-            self.indent += INDENT_SIZE;
-            let _ = self.line(format_args!(
-                "{}Identifier{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
-            ));
-            let _ = self.line_sub(format_args!(
-                "{}Publicity{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
-                if dec.pub_ {
-                    "0x1 (true)"
-                } else {
-                    "0x0 (false)"
-                },
-                Color::ResetAll
-            ));
-            let _ = self.line_sub(format_args!(
-                "{}Mutability{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
-                if dec.mut_ {
-                    "0x1 (true)"
-                } else {
-                    "0x0 (false)"
-                },
-                Color::ResetAll
-            ));
-            let _ = self.line_sub(format_args!(
-                "{}Type{}: {:?}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                dec.type_.clone().unwrap_or(Ty(0))
-            ));
-            let _ = self.visit_expr(&dec.initializer);
-            self.indent -= INDENT_SIZE;
-        }
-        Ok(())
-    }
-
-    fn visit_struct_dec(&mut self, dec: &ASTStructDecExpr) -> io::Result<()> {
-        if let TokenKind::Identifier(name) = &dec.identifier.kind {
-            let _ = self.line(format_args!(
-                "{}Struct Declaration{}:",
-                SUBTEXT_COLOR,
-                Color::ResetAll
-            ));
-            self.indent += INDENT_SIZE;
-            let _ = self.line(format_args!(
-                "{}Identifier{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
-            ));
-            let _ = self.line_sub(format_args!(
-                "{}Publicity{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
-                if dec.pub_ {
-                    "0x1 (true)"
-                } else {
-                    "0x0 (false)"
-                },
-                Color::ResetAll
-            ));
-            if !dec.generics.is_empty() {
-                let _ = self.line(format_args!(
-                    "{}Generics{}:",
-                    SUBTEXT_COLOR,
-                    Color::ResetAll
-                ));
-                self.indent += INDENT_SIZE;
-                for generic in dec.generics.iter() {
-                    let _ = self.line_sub(format_args!("{:?}", generic));
-                }
-                self.indent -= INDENT_SIZE;
-            }
-            let _ = self.line(format_args!("{}Fields{}:", SUBTEXT_COLOR, Color::ResetAll));
-            self.indent += INDENT_SIZE;
-            for field in dec.fields.iter() {
-                if let TokenKind::Identifier(field_name) = &field.identifier.kind {
-                    let _ = self.line(format_args!(
-                        "{}Identifier{}: {}{}{}",
-                        SUBTEXT_COLOR,
-                        Color::ResetAll,
-                        LAVENDAR_COLOR,
-                        field_name,
-                        Color::ResetAll
-                    ));
-                    let _ = self.line_sub(format_args!(
-                        "{}Publicity{}: {}{}{}",
-                        SUBTEXT_COLOR,
-                        Color::ResetAll,
-                        RED_COLOR,
-                        if field.pub_ {
-                            "0x1 (true)"
-                        } else {
-                            "0x0 (false)"
-                        },
-                        Color::ResetAll
-                    ));
-                    let _ = self.line_sub(format_args!(
-                        "{}Type{}: {}{:?}{}",
-                        SUBTEXT_COLOR,
-                        Color::ResetAll,
-                        LAVENDAR_COLOR,
-                        field.type_,
-                        Color::ResetAll
-                    ));
-                }
-            }
-            self.indent -= INDENT_SIZE * 2;
-        }
-        Ok(())
-    }
-
-    fn visit_tuple_struct_dec(&mut self, dec: &ASTTupleStructDecExpr) -> io::Result<()> {
-        if let TokenKind::Identifier(name) = &dec.identifier.kind {
-            let _ = self.line(format_args!(
-                "{}Tuple Struct Declaration{}:",
-                SUBTEXT_COLOR,
-                Color::ResetAll
-            ));
-            self.indent += INDENT_SIZE;
-            let _ = self.line(format_args!(
-                "{}Identifier{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                name,
-                Color::ResetAll
-            ));
-            let _ = self.line_sub(format_args!(
-                "{}Publicity{}: {}{}{}",
-                SUBTEXT_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
-                if dec.pub_ {
-                    "0x1 (true)"
-                } else {
-                    "0x0 (false)"
-                },
-                Color::ResetAll
-            ));
-            if !dec.generics.is_empty() {
-                let _ = self.line(format_args!(
-                    "{}Generics{}:",
-                    SUBTEXT_COLOR,
-                    Color::ResetAll
-                ));
-                self.indent += INDENT_SIZE;
-                for generic in dec.generics.iter() {
-                    let _ = self.line_sub(format_args!("{:?}", generic));
-                }
-                self.indent -= INDENT_SIZE;
-            }
-            let _ = self.line(format_args!("{}Fields{}:", SUBTEXT_COLOR, Color::ResetAll));
-            self.indent += INDENT_SIZE;
-            for field in dec.fields.iter() {
-                let _ = self.line_sub(format_args!("{:?}", field));
-            }
-            self.indent -= INDENT_SIZE * 2;
-        }
-        Ok(())
-    }
-
-    fn visit_block_expr(&mut self, block: &ASTBlockExpr) -> io::Result<()> {
-        let _ = self.line(format_args!("{}Block{}:", SUBTEXT_COLOR, Color::ResetAll));
-        self.indent += INDENT_SIZE;
-
-        for stmt in block.statements.iter() {
-            let _ = self.visit_stmt(stmt);
-        }
-
-        if let Some(expr) = &block.tail_expr {
-            let _ = self.line(format_args!("{}Tail{}:", SUBTEXT_COLOR, Color::ResetAll));
-            self.indent += INDENT_SIZE;
-            let _ = self.visit_expr(expr);
-            self.indent -= INDENT_SIZE;
-        }
-
-        self.indent -= INDENT_SIZE;
-        Ok(())
-    }
-
-    fn visit_unary_expr(&mut self, expr: &ASTUnaryExpr) -> io::Result<()> {
-        let _ = self.line(format_args!("{}Unary{}:", SUBTEXT_COLOR, Color::ResetAll));
-        self.indent += INDENT_SIZE;
-        let _ = self.line(format_args!(
-            "{}Operator{}: {}{}{}",
-            SUBTEXT_COLOR,
-            Color::ResetAll,
-            BLUE_COLOR,
-            expr.op.kind,
-            Color::ResetAll
-        ));
-        let _ = self.visit_expr(&expr.expr);
-        self.indent -= INDENT_SIZE;
-        Ok(())
-    }
-
-    fn visit_error(&mut self) -> io::Result<()> {
-        let _ = self.line(format_args!("{}! Error !{}", RED_COLOR, Color::ResetAll));
-        Ok(())
-    }
-
-    fn visit_valued(&mut self, kind: &ASTExprKind) -> io::Result<()> {
-        match kind {
-            ASTExprKind::Integer(v) => self.line_sub(format_args!(
-                "{}Integer{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                PEACH_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            ASTExprKind::Float(v) => self.line_sub(format_args!(
-                "{}Float{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                PEACH_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            ASTExprKind::Byte(v) => self.line_sub(format_args!(
-                "{}Byte{}({}{:02X}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                PEACH_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            ASTExprKind::Char(c) => {
-                let _ = self.write_indent_sub();
-                let _ = write!(self.out, "{}", BLUE_COLOR);
-                let _ = write!(self.out, "Char");
-                let _ = write!(self.out, "{}", Color::ResetAll);
-                let _ = write!(self.out, "(");
-                let _ = write!(self.out, "{}", GREEN_COLOR);
-                let _ = escape_char(self.out, *c);
-                let _ = write!(self.out, "{}", Color::ResetAll);
-                let _ = write!(self.out, ")");
-                writeln!(self.out)
-            }
-            ASTExprKind::String(s) => {
-                let _ = self.write_indent_sub();
-                let _ = write!(self.out, "{}", BLUE_COLOR);
-                let _ = write!(self.out, "String");
-                let _ = write!(self.out, "{}", Color::ResetAll);
-                let _ = write!(self.out, "(");
-                let _ = write!(self.out, "{}", GREEN_COLOR);
-                let _ = escape_string(self.out, s);
-                let _ = write!(self.out, "{}", Color::ResetAll);
-                let _ = write!(self.out, ")");
-                writeln!(self.out)
-            }
-            ASTExprKind::ByteString(b) => {
-                let _ = self.write_indent_sub();
-                let _ = write!(self.out, "{}", BLUE_COLOR);
-                let _ = write!(self.out, "Byte String");
-                let _ = write!(self.out, "{}", Color::ResetAll);
-                let _ = write!(self.out, "[");
-                let _ = write!(self.out, "{}", PEACH_COLOR);
-
-                for (i, byte) in b.iter().enumerate() {
-                    if i > 0 {
-                        let _ = write!(self.out, ", "); // comma between bytes
-                    }
-                    let _ = write!(self.out, "{:02X}", byte); // hex output
-                }
-
-                let _ = write!(self.out, "{}", Color::ResetAll);
-                let _ = write!(self.out, "]");
-                writeln!(self.out)
-            }
-
-            ASTExprKind::Bool(v) => self.line_sub(format_args!(
-                "{}Bool{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                RED_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            ASTExprKind::Variable(v) => self.line_sub(format_args!(
-                "{}Var{}({}{}{})",
-                BLUE_COLOR,
-                Color::ResetAll,
-                LAVENDAR_COLOR,
-                v,
-                Color::ResetAll
-            )),
-            _ => unreachable!(),
-        }
-    }
-
-    fn do_visit_stmt(&mut self, stmt: &ASTStmt) -> io::Result<()> {
-        match &stmt.kind {
-            ASTStmtKind::Expr(expr) => self.visit_expr(expr),
-            ASTStmtKind::Return(_ret) => todo!("return statement"),
-            ASTStmtKind::VarDec(dec) => self.visit_var_dec(dec),
-            ASTStmtKind::StructDec(dec) => self.visit_struct_dec(dec),
-            ASTStmtKind::TupleStructDec(dec) => self.visit_tuple_struct_dec(dec),
-        }
-    }
-
-    fn do_visit_expr(&mut self, expr: &ASTExpr) -> io::Result<()> {
-        match expr.kind.as_ref() {
-            ASTExprKind::Integer(_)
-            | ASTExprKind::Float(_)
-            | ASTExprKind::Byte(_)
-            | ASTExprKind::Char(_)
-            | ASTExprKind::String(_)
-            | ASTExprKind::ByteString(_)
-            | ASTExprKind::Bool(_)
-            | ASTExprKind::Variable(_) => {
-                let _ = self.visit_valued(expr.kind.as_ref());
-                Ok(())
-            }
-            ASTExprKind::Unary(unary) => self.visit_unary_expr(&unary),
-            ASTExprKind::Binary(bin) => self.visit_binary_expr(&bin),
-            ASTExprKind::Parenthesized(expr) => self.visit_paren_expr(&expr),
-            ASTExprKind::Assignment(expr) => self.visit_assignment_expr(expr),
-            ASTExprKind::Cast(expr) => self.visit_cast_expr(expr),
-            ASTExprKind::Block(block) => self.visit_block_expr(block),
-            ASTExprKind::Error => self.visit_error(),
-        }
-    }
-}
-
-const SPACES: [u8; 256] = [b' '; 256];
-
-impl<'a, W: Write> ASTPrinter<'a, W> {
-    #[inline(always)]
-    fn write_spaces(out: &mut impl Write, count: usize) -> io::Result<()> {
-        let mut remaining = count;
-        while remaining > 0 {
-            let chunk = remaining.min(SPACES.len());
-            let _ = out.write_all(&SPACES[..chunk]);
-            remaining -= chunk;
-        }
-        Ok(())
-    }
-
-    #[inline(always)]
-    fn write_indent(&mut self) -> io::Result<()> {
-        if self.indent > 0 {
-            let _ = Self::write_spaces(self.out, (self.indent - 1) * 4);
-            let _ = self.out.write_all(b" |> ");
-        }
-        Ok(())
-    }
-
-    #[inline(always)]
-    fn write_indent_sub(&mut self) -> io::Result<()> {
-        Self::write_spaces(self.out, self.indent * 4)
-    }
-
-    #[inline(always)]
-    fn line(&mut self, args: std::fmt::Arguments) -> io::Result<()> {
-        self.write_indent()?;
-        self.out.write_fmt(args)?;
-        self.out.write_all(b"\n")
-    }
-
-    #[inline(always)]
-    fn line_sub(&mut self, args: std::fmt::Arguments) -> io::Result<()> {
-        self.write_indent_sub()?;
-        self.out.write_fmt(args)?;
-        self.out.write_all(b"\n")
-    }
-}
-
-fn escape_string(out: &mut impl Write, s: &str) -> io::Result<()> {
-    for c in s.chars() {
-        match c {
-            '\n' => out.write_all(b"\\n"),
-            '\r' => out.write_all(b"\\r"),
-            '\t' => out.write_all(b"\\t"),
-            '\\' => out.write_all(b"\\\\"),
-            '"' => out.write_all(b"\\\""),
-            c => write!(out, "{}", c),
-        }?
-    }
-    Ok(())
-}
-
-fn escape_char(out: &mut impl Write, c: char) -> io::Result<()> {
-    match c {
-        '\n' => out.write_all(b"\\n"),
-        '\r' => out.write_all(b"\\r"),
-        '\t' => out.write_all(b"\\t"),
-        '\\' => out.write_all(b"\\\\"),
-        '\'' => out.write_all(b"\\\'"),
-        c => write!(out, "{}", c),
-    }?;
-    Ok(())
-}
-
 #[derive(Debug, Clone)]
 pub enum ASTStmtKind {
     Expr(ASTExpr),
     Return(ASTExpr),
     VarDec(ASTVarDecExpr),
+    ConstDec(ASTConstDecExpr),
     StructDec(ASTStructDecExpr),
     TupleStructDec(ASTTupleStructDecExpr),
+    UnitStructDec(ASTUnitStructDecExpr),
+    EnumDec(ASTEnumDecExpr),
+    TypeAliasDec(ASTTypeAliasDecExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -681,40 +105,72 @@ impl ASTStmt {
     }
 
     pub fn var_dec(
-        identifier: Token,
-        public: bool,
-        mutable: bool,
-        type_: Option<Ty>,
+        ident: Ident,
+        mut_: Mutability,
+        ty: Option<ASTType>,
         initializer: ASTExpr,
     ) -> Self {
         Self::new(ASTStmtKind::VarDec(ASTVarDecExpr::new(
-            identifier,
-            public,
-            mutable,
-            type_,
+            ident,
+            mut_,
+            ty,
             initializer,
         )))
     }
 
+    pub fn const_dec(ident: Ident, pub_: Publicity, ty: Option<ASTType>, expr: ASTExpr) -> Self {
+        Self::new(ASTStmtKind::ConstDec(ASTConstDecExpr::new(
+            ident, pub_, ty, expr,
+        )))
+    }
+
     pub fn struct_dec(
-        identifier: Token,
-        public: bool,
-        generics: Box<[Ty]>,
-        fields: Box<[ASTStructField]>,
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        fields: SmallVec<[ASTStructField; 4]>,
     ) -> Self {
         Self::new(ASTStmtKind::StructDec(ASTStructDecExpr::new(
-            identifier, public, generics, fields,
+            ident, pub_, generics, fields,
         )))
     }
 
     pub fn tuple_struct_dec(
-        identifier: Token,
-        public: bool,
-        generics: Box<[Ty]>,
-        fields: Box<[ASTTupleStructField]>,
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        fields: SmallVec<[ASTTupleStructField; 4]>,
     ) -> Self {
         Self::new(ASTStmtKind::TupleStructDec(ASTTupleStructDecExpr::new(
-            identifier, public, generics, fields,
+            ident, pub_, generics, fields,
+        )))
+    }
+
+    pub fn unit_struct_dec(ident: Ident, pub_: Publicity) -> Self {
+        Self::new(ASTStmtKind::UnitStructDec(ASTUnitStructDecExpr::new(
+            ident, pub_,
+        )))
+    }
+
+    pub fn enum_dec(
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        variants: SmallVec<[ASTEnumVariant; 4]>,
+    ) -> Self {
+        Self::new(ASTStmtKind::EnumDec(ASTEnumDecExpr::new(
+            ident, pub_, generics, variants,
+        )))
+    }
+
+    pub fn type_alias(
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        ty: ASTType,
+    ) -> Self {
+        Self::new(ASTStmtKind::TypeAliasDec(ASTTypeAliasDecExpr::new(
+            ident, pub_, generics, ty,
         )))
     }
 }
@@ -733,13 +189,21 @@ pub enum ASTExprKind {
     Cast(ASTCastExpr),
     Parenthesized(ASTParenExpr),
     Assignment(ASTAssignmentExpr),
-    Variable(&'static str),
+    Variable(String),
     Block(Box<ASTBlockExpr>),
+    FieldAccess(ASTFieldAccessExpr),
+    MethodCall(ASTMethodCallExpr),
+    Call(ASTCallExpr),
+    Index(ASTIndexExpr),
+    PathSegment(ASTPathSegmentExpr),
+    MacroCall(ASTMacroCallExpr),
+    Tuple(ASTTupleExpr),
+    Unit,
     Error,
 }
 
 impl Display for ASTExprKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             ASTExprKind::Integer(_) => write!(f, "Integer"),
             ASTExprKind::Float(_) => write!(f, "Float"),
@@ -753,8 +217,16 @@ impl Display for ASTExprKind {
             ASTExprKind::Binary(_) => write!(f, "Binary Expression"),
             ASTExprKind::Cast(_) => write!(f, "Cast Expression"),
             ASTExprKind::Assignment(_) => write!(f, "Assignment Expression"),
-            ASTExprKind::Variable(_) => write!(f, "Variable"),
+            ASTExprKind::Variable(..) => write!(f, "Variable"),
             ASTExprKind::Block(_) => write!(f, "Block Expression"),
+            ASTExprKind::FieldAccess(_) => write!(f, "Field Access"),
+            ASTExprKind::MethodCall(_) => write!(f, "Method Call"),
+            ASTExprKind::Call(_) => write!(f, "Call"),
+            ASTExprKind::Index(_) => write!(f, "Index"),
+            ASTExprKind::PathSegment(_) => write!(f, "Path Segment"),
+            ASTExprKind::MacroCall(_) => write!(f, "Macro Call"),
+            ASTExprKind::Tuple(_) => write!(f, "Tuple"),
+            ASTExprKind::Unit => write!(f, "Unit"),
             ASTExprKind::Error => write!(f, "ExprError"),
         }
     }
@@ -762,16 +234,13 @@ impl Display for ASTExprKind {
 
 #[derive(Debug, Clone)]
 pub struct ASTExpr {
-    pub kind: Box<ASTExprKind>,
+    pub kind: ASTExprKind,
     pub span: Span,
 }
 
 impl ASTExpr {
     pub fn new(kind: ASTExprKind, span: Span) -> Self {
-        Self {
-            kind: Box::new(kind),
-            span,
-        }
+        Self { kind, span }
     }
 
     pub fn int(value: u128, span: Span) -> Self {
@@ -813,21 +282,18 @@ impl ASTExpr {
         Self::new(ASTExprKind::Parenthesized(ASTParenExpr::new(expr)), span)
     }
 
-    pub fn cast(expr: ASTExpr, target: Ty, span: Span) -> Self {
+    pub fn cast(expr: ASTExpr, target: ASTType, span: Span) -> Self {
         Self::new(ASTExprKind::Cast(ASTCastExpr::new(expr, target)), span)
     }
 
-    pub fn assignment(target: Token, op: TokenKind, value: ASTExpr, span: Span) -> Self {
+    pub fn assignment(target: Ident, op: TokenKind, value: ASTExpr, span: Span) -> Self {
         let op_kind = match op {
             TokenKind::Equals => ASTBinaryOperatorKind::Assign,
             TokenKind::PlusEquals => ASTBinaryOperatorKind::AddAssign,
             TokenKind::MinusEquals => ASTBinaryOperatorKind::SubtractAssign,
             TokenKind::AsteriskEquals => ASTBinaryOperatorKind::MultiplyAssign,
             TokenKind::SlashEquals => ASTBinaryOperatorKind::DivideAssign,
-            _ => {
-                dbg!(op);
-                panic!("Invalid assignment operator")
-            }
+            _ => unreachable!(),
         };
 
         Self::new(
@@ -836,7 +302,7 @@ impl ASTExpr {
         )
     }
 
-    pub fn variable(name: &'static str, span: Span) -> Self {
+    pub fn variable(name: String, span: Span) -> Self {
         Self::new(ASTExprKind::Variable(name), span)
     }
 
@@ -844,16 +310,122 @@ impl ASTExpr {
         Self::new(ASTExprKind::Unary(ASTUnaryExpr::new(op, expr)), span)
     }
 
-    pub fn block(stmts: Vec<ASTStmt>, tail: Option<ASTExpr>, span: Span) -> Self {
+    pub fn block(stmts: Box<[ASTStmt]>, tail: Option<ASTExpr>, span: Span) -> Self {
         Self::new(
             ASTExprKind::Block(Box::new(ASTBlockExpr::new(stmts, tail))),
             span,
         )
     }
 
+    pub fn field_access(expr: ASTExpr, field: Ident, span: Span) -> Self {
+        Self::new(
+            ASTExprKind::FieldAccess(ASTFieldAccessExpr {
+                expr: Box::new(expr),
+                field,
+            }),
+            span,
+        )
+    }
+
+    pub fn method_call(expr: ASTExpr, method: Ident, args: Vec<ASTExpr>, span: Span) -> Self {
+        Self::new(
+            ASTExprKind::MethodCall(ASTMethodCallExpr {
+                expr: Box::new(expr),
+                method,
+                args,
+            }),
+            span,
+        )
+    }
+
+    pub fn call(expr: ASTExpr, args: Vec<ASTExpr>, span: Span) -> Self {
+        Self::new(
+            ASTExprKind::Call(ASTCallExpr {
+                expr: Box::new(expr),
+                args,
+            }),
+            span,
+        )
+    }
+
+    pub fn index(expr: ASTExpr, index: ASTExpr, span: Span) -> Self {
+        Self::new(
+            ASTExprKind::Index(ASTIndexExpr {
+                expr: Box::new(expr),
+                index: Box::new(index),
+            }),
+            span,
+        )
+    }
+
+    pub fn path_segment(expr: ASTExpr, segment: Ident, span: Span) -> Self {
+        Self::new(
+            ASTExprKind::PathSegment(ASTPathSegmentExpr {
+                expr: Box::new(expr),
+                segment,
+            }),
+            span,
+        )
+    }
+
+    pub fn macro_call(name: String, args: Vec<ASTExpr>, span: Span) -> Self {
+        Self::new(
+            ASTExprKind::MacroCall(ASTMacroCallExpr { name, args }),
+            span,
+        )
+    }
+
+    pub fn tuple(elems: Vec<ASTExpr>, span: Span) -> Self {
+        Self::new(ASTExprKind::Tuple(ASTTupleExpr { elems }), span)
+    }
+
+    pub fn unit(span: Span) -> Self {
+        Self::new(ASTExprKind::Unit, span)
+    }
+
     pub fn error(file_id: usize) -> Self {
         Self::new(ASTExprKind::Error, Span::new(0, 0, file_id))
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Ident {
+    pub id: StringId, // or Rc<str> for owned
+    pub span: Span,
+}
+
+impl Ident {
+    pub fn new(id: StringId, span: Span) -> Self {
+        Self { id, span }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ASTType {
+    Path(String), // Foo
+    QualifiedPath(Vec<String>),
+    Ref {
+        mutable: Mutability,
+        inner: Box<ASTType>,
+    },
+    Tuple(Vec<ASTType>),
+    Generic {
+        base: Box<ASTType>,
+        args: Vec<ASTType>,
+    },
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Publicity {
+    Public,
+    Private,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mutability {
+    Mutable,
+    Immutable,
 }
 
 #[derive(Debug, Clone)]
@@ -876,12 +448,12 @@ impl ASTBinaryExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTBinaryOperator {
     pub kind: ASTBinaryOperatorKind,
-    pub token: Token,
+    pub span: Span,
 }
 
 impl ASTBinaryOperator {
-    pub fn new(kind: ASTBinaryOperatorKind, token: Token) -> Self {
-        Self { kind, token }
+    pub fn new(kind: ASTBinaryOperatorKind, span: Span) -> Self {
+        Self { kind, span }
     }
 
     pub fn prec(&self) -> u8 {
@@ -908,13 +480,12 @@ impl ASTBinaryOperator {
             | ASTBinaryOperatorKind::SubtractAssign
             | ASTBinaryOperatorKind::MultiplyAssign
             | ASTBinaryOperatorKind::DivideAssign => 0,
-
             _ => 0,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ASTBinaryOperatorKind {
     // Arithmetic
     Add,
@@ -952,7 +523,7 @@ pub enum ASTBinaryOperatorKind {
 }
 
 impl Display for ASTBinaryOperatorKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             ASTBinaryOperatorKind::Assign => write!(f, "Assign (=)"),
             ASTBinaryOperatorKind::Add => write!(f, "Add (+)"),
@@ -987,37 +558,50 @@ impl Display for ASTBinaryOperatorKind {
 
 #[derive(Debug, Clone)]
 pub struct ASTParenExpr {
-    pub expr: ASTExpr,
+    pub expr: Box<ASTExpr>,
 }
 
 impl ASTParenExpr {
     pub fn new(expr: ASTExpr) -> Self {
-        Self { expr }
+        Self {
+            expr: Box::new(expr),
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTVarDecExpr {
-    identifier: Token,
-    pub_: bool,
-    mut_: bool,
-    type_: Option<Ty>,
-    initializer: ASTExpr,
+    pub ident: Ident,
+    pub mut_: Mutability,
+    pub ty: Option<ASTType>,
+    pub initializer: ASTExpr,
 }
 
 impl ASTVarDecExpr {
-    pub fn new(
-        identifier: Token,
-        pub_: bool,
-        mut_: bool,
-        type_: Option<Ty>,
-        initializer: ASTExpr,
-    ) -> Self {
+    pub fn new(ident: Ident, mut_: Mutability, ty: Option<ASTType>, initializer: ASTExpr) -> Self {
         Self {
-            identifier,
-            pub_,
+            ident,
             mut_,
-            type_,
+            ty,
+            initializer,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTConstDecExpr {
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub ty: Option<ASTType>,
+    pub initializer: ASTExpr,
+}
+
+impl ASTConstDecExpr {
+    pub fn new(ident: Ident, pub_: Publicity, ty: Option<ASTType>, initializer: ASTExpr) -> Self {
+        Self {
+            ident,
+            pub_,
+            ty,
             initializer,
         }
     }
@@ -1025,21 +609,21 @@ impl ASTVarDecExpr {
 
 #[derive(Debug, Clone)]
 pub struct ASTStructDecExpr {
-    pub identifier: Token,
-    pub pub_: bool,
-    pub generics: Box<[Ty]>,
-    pub fields: Box<[ASTStructField]>,
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub generics: SmallVec<[ASTGenericParam; 2]>,
+    pub fields: SmallVec<[ASTStructField; 4]>,
 }
 
 impl ASTStructDecExpr {
     pub fn new(
-        identifier: Token,
-        pub_: bool,
-        generics: Box<[Ty]>,
-        fields: Box<[ASTStructField]>,
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        fields: SmallVec<[ASTStructField; 4]>,
     ) -> Self {
         Self {
-            identifier,
+            ident,
             pub_,
             generics,
             fields,
@@ -1049,28 +633,28 @@ impl ASTStructDecExpr {
 
 #[derive(Debug, Clone)]
 pub struct ASTStructField {
-    pub identifier: Token,
-    pub pub_: bool,
-    pub type_: Ty,
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub ty: ASTType,
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTTupleStructDecExpr {
-    pub identifier: Token,
-    pub pub_: bool,
-    pub generics: Box<[Ty]>,
-    pub fields: Box<[ASTTupleStructField]>,
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub generics: SmallVec<[ASTGenericParam; 2]>,
+    pub fields: SmallVec<[ASTTupleStructField; 4]>,
 }
 
 impl ASTTupleStructDecExpr {
     pub fn new(
-        identifier: Token,
-        pub_: bool,
-        generics: Box<[Ty]>,
-        fields: Box<[ASTTupleStructField]>,
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        fields: SmallVec<[ASTTupleStructField; 4]>,
     ) -> Self {
         Self {
-            identifier,
+            ident,
             pub_,
             generics,
             fields,
@@ -1080,19 +664,92 @@ impl ASTTupleStructDecExpr {
 
 #[derive(Debug, Clone)]
 pub struct ASTTupleStructField {
-    pub pub_: bool,
-    pub type_: Ty,
+    pub pub_: Publicity,
+    pub ty: ASTType,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTUnitStructDecExpr {
+    pub ident: Ident,
+    pub pub_: Publicity,
+}
+
+impl ASTUnitStructDecExpr {
+    pub fn new(ident: Ident, pub_: Publicity) -> Self {
+        Self { ident, pub_ }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTEnumDecExpr {
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub generics: SmallVec<[ASTGenericParam; 2]>,
+    pub variants: SmallVec<[ASTEnumVariant; 4]>,
+}
+
+impl ASTEnumDecExpr {
+    pub fn new(
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        variants: SmallVec<[ASTEnumVariant; 4]>,
+    ) -> Self {
+        Self {
+            ident,
+            pub_,
+            generics,
+            variants,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTEnumVariant {
+    pub ident: Ident,
+    pub kind: ASTEnumVariantKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ASTEnumVariantKind {
+    Struct(SmallVec<[ASTStructField; 4]>),
+    Tuple(SmallVec<[ASTTupleStructField; 4]>),
+    Unit,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTTypeAliasDecExpr {
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub generics: SmallVec<[ASTGenericParam; 2]>,
+    pub ty: ASTType,
+}
+
+impl ASTTypeAliasDecExpr {
+    pub fn new(
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        ty: ASTType,
+    ) -> Self {
+        Self {
+            ident,
+            pub_,
+            generics,
+            ty,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTAssignmentExpr {
-    target: Token,
+    pub target: Ident,
     op: ASTBinaryOperatorKind,
-    value: Box<ASTExpr>,
+    pub value: Box<ASTExpr>,
 }
 
 impl ASTAssignmentExpr {
-    pub fn new(target: Token, op: ASTBinaryOperatorKind, value: ASTExpr) -> Self {
+    pub fn new(target: Ident, op: ASTBinaryOperatorKind, value: ASTExpr) -> Self {
         Self {
             target,
             op,
@@ -1104,11 +761,11 @@ impl ASTAssignmentExpr {
 #[derive(Debug, Clone)]
 pub struct ASTCastExpr {
     pub expr: Box<ASTExpr>,
-    pub target: Ty,
+    pub target: ASTType,
 }
 
 impl ASTCastExpr {
-    pub fn new(expr: ASTExpr, target: Ty) -> Self {
+    pub fn new(expr: ASTExpr, target: ASTType) -> Self {
         Self {
             expr: Box::new(expr),
             target,
@@ -1134,7 +791,7 @@ impl ASTUnaryExpr {
 #[derive(Debug, Clone)]
 pub struct ASTUnaryOperator {
     pub kind: ASTUnaryOperatorKind,
-    pub token: Token,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1154,7 +811,7 @@ pub enum ASTUnaryOperatorKind {
 }
 
 impl Display for ASTUnaryOperatorKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             ASTUnaryOperatorKind::Negate => write!(f, "Negate (-)"),
             ASTUnaryOperatorKind::Not => write!(f, "Logical Not (!)"),
@@ -1173,22 +830,73 @@ impl Display for ASTUnaryOperatorKind {
 }
 
 impl ASTUnaryOperator {
-    pub fn new(kind: ASTUnaryOperatorKind, token: Token) -> Self {
-        Self { kind, token }
+    pub fn new(kind: ASTUnaryOperatorKind, span: Span) -> Self {
+        Self { kind, span }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTBlockExpr {
-    pub statements: Vec<ASTStmt>,
-    pub tail_expr: Option<Box<ASTExpr>>,
+    pub stmts: Box<[ASTStmt]>,
+    pub tail: Option<ASTExpr>,
 }
 
 impl ASTBlockExpr {
-    pub fn new(stmts: Vec<ASTStmt>, tail: Option<ASTExpr>) -> Self {
-        Self {
-            statements: stmts,
-            tail_expr: tail.map(|t| Box::new(t)),
-        }
+    pub fn new(stmts: Box<[ASTStmt]>, tail: Option<ASTExpr>) -> Self {
+        Self { stmts, tail }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTGenericParam {
+    pub name: Ident,              // Name: T, U, ...
+    pub default: Option<ASTType>, // e.g. = Inst
+}
+
+impl ASTGenericParam {
+    pub fn new(name: Ident, default: Option<ASTType>) -> Self {
+        Self { name, default }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTFieldAccessExpr {
+    pub expr: Box<ASTExpr>,
+    pub field: Ident,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTMethodCallExpr {
+    pub expr: Box<ASTExpr>,
+    pub method: Ident,
+    pub args: Vec<ASTExpr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTCallExpr {
+    pub expr: Box<ASTExpr>,
+    pub args: Vec<ASTExpr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTIndexExpr {
+    pub expr: Box<ASTExpr>,
+    pub index: Box<ASTExpr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTPathSegmentExpr {
+    pub expr: Box<ASTExpr>,
+    pub segment: Ident,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTMacroCallExpr {
+    pub name: String,
+    pub args: Vec<ASTExpr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTTupleExpr {
+    pub elems: Vec<ASTExpr>,
 }

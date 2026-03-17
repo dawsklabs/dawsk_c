@@ -17,8 +17,8 @@ use std::{
     fmt::{self, Debug, Display},
     hash::Hash,
     io::{self, Write},
-    ops::Range,
-    ops::RangeInclusive,
+    ops::{Range, RangeInclusive},
+    sync::{Arc, Mutex},
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -193,12 +193,28 @@ impl<S: Span> Label<S> {
     }
 }
 
-#[must_use = "call `.render()` to render and then print the report"]
 pub struct ReportBag {
-    reports: Vec<Report<crate::source::Span>>,
+    pub inner: Arc<Mutex<ReportBagInner>>,
 }
 
 impl ReportBag {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ReportBagInner::new())),
+        }
+    }
+
+    pub fn push(&self, report: Report<crate::source::Span>) {
+        self.inner.lock().unwrap().reports.push(report);
+    }
+}
+
+#[must_use = "call `.render()` to render and then print the report"]
+pub struct ReportBagInner {
+    reports: Vec<Report<crate::source::Span>>,
+}
+
+impl ReportBagInner {
     pub fn new() -> Self {
         Self { reports: vec![] }
     }

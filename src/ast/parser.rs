@@ -1,98 +1,138 @@
 use smallvec::{smallvec, SmallVec};
 
-use super::scope::Symbol;
+use super::lexer::{LexMode, Lexer};
 use super::token::{Keyword, Token, TokenKind};
 use super::{
     ASTBinaryOperator, ASTBinaryOperatorKind, ASTExpr, ASTStmt, ASTStructField,
-    ASTTupleStructField, ASTUnaryOperator, ASTUnaryOperatorKind,
+    ASTTupleStructField, ASTType, ASTUnaryOperator, ASTUnaryOperatorKind, Mutability, Publicity,
 };
+use crate::ast::strings::{StringId, StringPool};
+use crate::ast::{ASTEnumVariant, ASTEnumVariantKind, ASTGenericParam, Ident};
 use crate::reports::{Label, Report, ReportKind};
-use crate::types::{Primitive, Ty, TyKind};
 
 use crate::source::Span;
-use crate::{abort, Compiler};
+use crate::{abort, color, Compiler};
 use std::collections::VecDeque;
 
 pub struct Parser<'a> {
-    tokens: &'a [Token],
-    index: usize,
-    pushed_back: VecDeque<Token>,
-    compiler: &'a mut Compiler,
+    lexer: Lexer<'a>,
+    buffer: VecDeque<Token>,
+    pub string_pool: StringPool,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: &'a [Token], compiler: &'a mut Compiler) -> Self {
+    pub fn new(compiler: &'a mut Compiler, file_id: usize) -> Self {
+        let lexer = Lexer::new(compiler, file_id);
         Self {
-            tokens,
-            index: 0,
-            pushed_back: VecDeque::new(),
-            compiler,
+            lexer,
+            buffer: VecDeque::with_capacity(4),
+            string_pool: StringPool::new(),
         }
     }
 
-    pub fn peek(&self, offset: isize) -> Token {
-        if offset == 0 {
-            if let Some(tok) = self.pushed_back.front() {
-                return tok.clone();
-            }
+    fn ensure_buffered(&mut self, n: usize) {
+        while self.buffer.len() <= n {
+            let tok = self.lexer.next_token();
+            self.buffer.push_back(tok);
         }
+    }
 
-        let base = self.index as isize + offset - self.pushed_back.len() as isize;
+    pub fn peek(&mut self, n: usize) -> &Token {
+        self.ensure_buffered(n);
+        &self.buffer[n]
+    }
 
-        let idx = base.clamp(0, (self.tokens.len() - 1) as isize) as usize;
-        self.tokens[idx].clone()
+    pub fn backpeek(&self, n: usize) -> &Token {
+        assert!(n > 0);
+        assert!(
+            n <= self.buffer.len(),
+            "backpeek({n}) out of bounds (len={})",
+            self.buffer.len()
+        );
+        &self.buffer[self.buffer.len() - n]
     }
 
     pub fn advance(&mut self, n: usize) {
-        self.index += n;
+        self.ensure_buffered(n.saturating_sub(1));
+        self.buffer.drain(..n.min(self.buffer.len()));
     }
 
     pub fn consume(&mut self) -> Token {
-        if abort::is_aborted() {
-            return Token {
-                kind: TokenKind::EOF,
-                span: self
-                    .tokens
-                    .last()
-                    .map(|t| t.span)
-                    .unwrap_or(Span::new(0, 0, 0)),
-            };
-        }
-
-        if let Some(tok) = self.pushed_back.pop_front() {
-            return tok;
-        }
-
-        self.index += 1;
-        self.peek(-1)
+        self.ensure_buffered(0);
+        self.buffer.pop_front().unwrap()
     }
 
     pub fn consume_check(&mut self, expected: TokenKind) -> Token {
         let token = self.consume();
-        if token.kind != expected {
-            self.compiler.reports.push(
-                Report::build(ReportKind::Error, token.span)
-                    .with_message("unexpected token")
-                    .with_label(Label::new(token.span).with_message("found here"))
-                    .finish(),
-            );
+        if token.kind == expected {
+            return token;
         }
+        self.lexer.compiler.shared.reports.push(
+            Report::build(ReportKind::Error, token.span)
+                .with_message(format!("expected `{expected}`, found `{}`", token.kind))
+                .with_label(Label::new(token.span).with_message(format!("expected {expected}")))
+                .finish(),
+        );
         token
     }
 
-    fn push_back(&mut self, token: Token) {
-        self.pushed_back.push_front(token);
+    pub fn check_whitespace(&mut self, starter: Span, next: Span) {
+        if next.start <= starter.end {
+            return;
+        }
+        self.lexer.compiler.shared.reports.push(
+            Report::build(ReportKind::Warning, Span::merge(starter, next))
+                .with_message("unexpected whitespace")
+                .with_label(Label::new(Span::merge(starter, next)))
+                .finish(),
+        );
     }
 
-    pub fn check_whitespace(&mut self, starter: Span, next: Span) {
-        if next.start != starter.end {
-            let span = Span::merge(starter, next);
-            self.compiler.reports.push(
-                Report::build(ReportKind::Warning, span)
-                    .with_message("unexpected whitespace")
-                    .with_label(Label::new(span))
+    fn parse_optional_token(&mut self, kind: TokenKind) -> bool {
+        if self.peek(0).kind == kind {
+            self.advance(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn consume_identifier(&mut self) -> Token {
+        let tok = self.consume();
+        if !matches!(tok.kind, TokenKind::Identifier(_)) {
+            self.lexer.compiler.shared.reports.push(
+                Report::build(ReportKind::Error, tok.span)
+                    .with_message("expected identifier")
+                    .with_label(
+                        Label::new(tok.span)
+                            .with_message("expected IDENTIFIER")
+                            .with_color(color::RED_COLOR),
+                    )
                     .finish(),
             );
+        }
+        tok
+    }
+
+    fn intern_identifier(&mut self, token: &Token) -> StringId {
+        if let TokenKind::Identifier(name) = &token.kind {
+            self.string_pool.intern(name)
+        } else {
+            StringId::EMPTY
+        }
+    }
+
+    // ← NEUE FUNKTION
+    fn make_ident(&mut self, token: &Token) -> Ident {
+        let id = self.intern_identifier(token);
+        Ident::new(id, token.span)
+    }
+
+    fn parse_visibility(&mut self) -> Publicity {
+        if self.parse_optional_token(TokenKind::Keyword(Keyword::Pub)) {
+            Publicity::Public
+        } else {
+            Publicity::Private
         }
     }
 
@@ -116,35 +156,44 @@ impl<'a> Parser<'a> {
         Some(self.parse_stmt())
     }
 
+    fn peek_item_keyword(&mut self) -> TokenKind {
+        if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
+            self.peek(1).kind.clone()
+        } else {
+            self.peek(0).kind.clone()
+        }
+    }
+
     fn parse_stmt(&mut self) -> ASTStmt {
-        match self.peek(0).kind {
-            TokenKind::Keyword(Keyword::Dec) => self.parse_declare_stmt(),
+        match self.peek_item_keyword() {
+            TokenKind::Keyword(Keyword::Dec) => self.parse_var_dec_stmt(),
+            TokenKind::Keyword(Keyword::Const) => self.parse_const_stmt(),
+            TokenKind::Keyword(Keyword::Type) => self.parse_type_alias_stmt(),
+            TokenKind::Keyword(Keyword::Struct) => self.parse_struct_stmt(),
+            TokenKind::Keyword(Keyword::Enum) => self.parse_enum_stmt(),
+            // TokenKind::Keyword(Keyword::Trait) => self.parse_trait_stmt(),
+            // TokenKind::Keyword(Keyword::Func)   => self.parse_func_stmt(),
+            // TokenKind::Keyword(Keyword::Extend) => self.parse_extend_stmt(),
             _ => self.parse_expr_stmt(),
         }
     }
 
-    fn parse_block_expr(&mut self) -> ASTExpr {
-        let curly = self.consume(); // '{'
-        self.compiler.scopes.push();
-
+    fn parse_block_body(&mut self, curly: Token) -> ASTExpr {
         let mut stmts = Vec::new();
         let mut tail_expr = None;
 
         while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
-            match self.peek(0).kind {
+            // dec-Variablen sind in Blöcken immer Statements
+            match self.peek_item_keyword() {
                 TokenKind::Keyword(Keyword::Dec) => {
-                    // declarations are ALWAYS statements
-                    stmts.push(self.parse_declare_stmt());
+                    stmts.push(self.parse_var_dec_stmt());
                 }
-
                 _ => {
                     let expr = self.parse_expr();
-
                     if self.peek(0).kind == TokenKind::Semicolon {
                         self.advance(1);
                         stmts.push(ASTStmt::expr(expr));
                     } else {
-                        // no semicolon → must be tail expr
                         tail_expr = Some(expr);
                         break;
                     }
@@ -152,378 +201,432 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.consume_check(TokenKind::RCurly);
-        self.compiler.scopes.pop();
-
-        let span = Span::merge(curly.span, self.peek(-1).span);
-        ASTExpr::block(stmts, tail_expr, span)
-    }
-
-    fn parse_declare_stmt(&mut self) -> ASTStmt {
-        self.advance(1); // consume 'dec' token
-
-        if self.peek(0).kind == TokenKind::LParen {
-            self.check_whitespace(self.peek(-1).span.clone(), self.peek(0).span.clone());
-            match self.peek(1).kind {
-                TokenKind::Keyword(Keyword::Struct) => self.parse_struct_dec(),
-                // TokenKind::Keyword(Keyword::Enum) => self.parse_enum_declaration(),
-                // TokenKind::Keyword(Keyword::Trait) => self.parse_trait_declaration(),
-                // TokenKind::Keyword(Keyword::Type) => self.parse_type_declaration(),
-                // TokenKind::Keyword(Keyword::Const) => self.parse_const_declaration(),
-                _ => unreachable!(),
-            }
-        } else {
-            self.parse_var_declaration()
-        }
-    }
-
-    fn parse_optional_token(&mut self, kind: TokenKind) -> bool {
-        if self.peek(0).kind == kind {
-            self.advance(1);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn parse_identifier(&mut self) -> Token {
-        let tok = self.consume();
-        if !matches!(tok.kind, TokenKind::Identifier(_)) {
-            self.compiler.reports.push(
-                Report::build(ReportKind::Error, tok.span)
-                    .with_message("expected identifier")
-                    .with_label(Label::new(tok.span).with_message("expected IDENTIFIER"))
-                    .finish(),
-            );
-        }
-        tok
+        let close = self.consume_check(TokenKind::RCurly);
+        let span = Span::merge(curly.span, close.span);
+        ASTExpr::block(stmts.into_boxed_slice(), tail_expr, span)
     }
 
     fn parse_struct_field(&mut self) -> ASTStructField {
-        let pub_ = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
+        let pub_ = if self.parse_optional_token(TokenKind::Keyword(Keyword::Pub)) {
+            Publicity::Public
+        } else {
+            Publicity::Private
+        };
 
         // name
-        let identifier = self.parse_identifier();
+        let ident_token = self.consume_identifier();
+        let ident = self.make_ident(&ident_token);
 
         // :
         self.consume_check(TokenKind::Colon);
 
         // type
-        let type_ = self.parse_type();
+        let ty = self.parse_type();
 
         self.parse_field_end(TokenKind::RCurly);
 
-        ASTStructField {
-            identifier,
-            pub_,
-            type_,
-        }
+        ASTStructField { ident, pub_, ty }
     }
 
     fn parse_tuple_struct_field(&mut self) -> ASTTupleStructField {
-        let pub_ = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
+        let pub_ = if self.parse_optional_token(TokenKind::Keyword(Keyword::Pub)) {
+            Publicity::Public
+        } else {
+            Publicity::Private
+        };
 
         // type
-        let type_ = self.parse_type();
+        let ty = self.parse_type();
 
         self.parse_field_end(TokenKind::RParen);
 
-        ASTTupleStructField { pub_, type_ }
+        ASTTupleStructField { pub_, ty }
     }
 
     fn parse_field_end(&mut self, end: TokenKind) {
-        match self.peek(0).kind {
+        let current = self.peek(0);
+        match &current.kind {
             TokenKind::Comma => {
                 self.advance(1);
             }
-            k if k == end => {
+            k if *k == end => {
                 // ok, letztes Feld
             }
             _ => {
                 let span = self.peek(0).span;
-                self.compiler.reports.push(
+                self.lexer.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, span)
-                        .with_message("unexpected token")
-                        .with_label(Label::new(span).with_message("expected COLON"))
-                        .finish(),
-                );
-            }
-        }
-    }
-
-    fn parse_struct_dec(&mut self) -> ASTStmt {
-        // (struct)
-        self.consume_check(TokenKind::LParen);
-        self.consume_check(TokenKind::Keyword(Keyword::Struct));
-        self.consume_check(TokenKind::RParen);
-
-        let public = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
-        let identifier = self.parse_identifier();
-
-        // optional generics: <T, U>
-        let generics = if self.peek(0).kind == TokenKind::LAngle {
-            self.check_whitespace(identifier.span.clone(), self.peek(0).span.clone());
-
-            let args = self.parse_generic_args();
-
-            // checkwhitespace between  '>' and '('
-            if self.peek(0).kind == TokenKind::LParen {
-                self.check_whitespace(
-                    self.tokens[self.index - 1].span.clone(),
-                    self.peek(0).span.clone(),
-                );
-            }
-
-            args
-        } else {
-            Box::new([])
-        };
-
-        if self.peek(0).kind == TokenKind::LCurly {
-            // {
-            self.advance(1);
-
-            // Fields
-            let fields = self.parse_fields(TokenKind::RCurly, Self::parse_struct_field);
-
-            // }
-            self.consume_check(TokenKind::RCurly);
-
-            // ;
-            if self.peek(0).kind == TokenKind::Semicolon {
-                self.advance(1);
-            } else {
-                let span = self.peek(0).span.clone();
-                self.compiler.reports.push(
-                    Report::build(ReportKind::Error, span)
-                        .with_message("missing semicolon")
-                        .with_label(Label::new(span).with_message("expected SEMICOLON"))
-                        .finish(),
-                );
-            }
-
-            ASTStmt::struct_dec(identifier, public, generics, fields)
-        } else {
-            // (
-            self.consume_check(TokenKind::LParen);
-
-            // Fields
-            let fields = self.parse_fields(TokenKind::RParen, Self::parse_tuple_struct_field);
-
-            // )
-            self.consume_check(TokenKind::RParen);
-
-            // ;
-            if self.peek(0).kind == TokenKind::Semicolon {
-                self.advance(1);
-            } else {
-                let span = self.peek(0).span;
-                self.compiler.reports.push(
-                    Report::build(ReportKind::Error, span)
-                        .with_message("unexpected token")
-                        .with_label(Label::new(span).with_message("expected COLON"))
-                        .finish(),
-                );
-            }
-
-            ASTStmt::tuple_struct_dec(identifier, public, generics, fields)
-        }
-    }
-
-    fn parse_fields<F, T>(&mut self, end: TokenKind, parse_field: F) -> Box<[T]>
-    where
-        F: Fn(&mut Self) -> T,
-    {
-        let mut fields = Vec::new();
-
-        while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EOF {
-            fields.push(parse_field(self));
-        }
-
-        fields.into_boxed_slice()
-    }
-
-    fn parse_var_declaration(&mut self) -> ASTStmt {
-        let public = self.parse_optional_token(TokenKind::Keyword(Keyword::Pub));
-        let mutable = self.parse_optional_token(TokenKind::Keyword(Keyword::Mut));
-
-        // identifier: consume and validate
-        let identifier_token = self.consume();
-        match &identifier_token.kind.clone() {
-            TokenKind::Identifier(name) => {
-                let sym_id_pre = self.compiler.name_interner.intern(&name);
-                let sym_id_opt = { self.compiler.scopes.lookup_current(sym_id_pre) };
-
-                if let Some(sym_id) = sym_id_opt {
-                    self.compiler.reports.push(
-                        Report::build(ReportKind::Error, identifier_token.span)
-                            .with_message("already defined")
-                            .with_label(
-                                Label::new(identifier_token.span).with_message("redefined here"),
-                            )
-                            .with_label(
-                                Label::new(self.compiler.scopes.symbol_span(sym_id))
-                                    .with_message("defined here"),
-                            )
-                            .finish(),
-                    );
-                }
-            }
-            _ => {
-                self.compiler.reports.push(
-                    Report::build(ReportKind::Error, identifier_token.span)
                         .with_message("unexpected token")
                         .with_label(
-                            Label::new(identifier_token.span).with_message("expected IDENTIFIER"),
+                            Label::new(span)
+                                .with_message("expected COMMA or end of declaration")
+                                .with_color(color::RED_COLOR),
                         )
                         .finish(),
                 );
             }
         }
+    }
 
-        let ident_name = match &identifier_token.kind.clone() {
-            TokenKind::Identifier(name) => name,
-            _ => "__ERROR<Identifier>",
-        };
+    fn parse_fields<T, F>(&mut self, end: TokenKind, mut parse_field: F) -> SmallVec<[T; 4]>
+    where
+        F: FnMut(&mut Self) -> T,
+    {
+        let mut fields = smallvec![];
 
-        // Optional Type
-        let mut type_ = None;
-        if self.peek(0).kind == TokenKind::Colon {
-            self.advance(1); // skip ':'
-            type_ = Some(self.parse_type());
+        while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EOF {
+            fields.push(parse_field(self));
         }
 
-        // require '='
-        if self.peek(0).kind != TokenKind::Equals {
+        fields
+    }
+
+    fn parse_var_dec_stmt(&mut self) -> ASTStmt {
+        if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
             let span = self.peek(0).span;
-            self.compiler.reports.push(
+            self.lexer.compiler.shared.reports.push(
                 Report::build(ReportKind::Error, span)
-                    .with_message("unexpected token")
-                    .with_label(Label::new(span).with_message("expected EQUALS"))
+                    .with_message("PUB is not allowed on variable declarations")
+                    .with_label(
+                        Label::new(span)
+                            .with_message("remove PUB here")
+                            .with_color(color::RED_COLOR),
+                    )
                     .finish(),
             );
-            self.advance(1);
-        } else {
-            self.advance(1); // consume '='
+            self.advance(1); // konsumieren und weitermachen
         }
 
+        self.consume_check(TokenKind::Keyword(Keyword::Dec));
+
+        let mut_ = if self.parse_optional_token(TokenKind::Keyword(Keyword::Mut)) {
+            Mutability::Mutable
+        } else {
+            Mutability::Immutable
+        };
+
+        let ident_token = self.consume_identifier();
+        let ident = self.make_ident(&ident_token);
+
+        let ty = if self.peek(0).kind == TokenKind::Colon {
+            self.advance(1);
+            Some(self.parse_type())
+        } else {
+            None
+        };
+
+        self.consume_check(TokenKind::Equals);
+
         let expr = if self.peek(0).kind == TokenKind::LCurly {
-            self.parse_block_expr()
+            let curly = self.consume();
+            self.parse_block_body(curly)
         } else {
             self.parse_expr()
         };
 
-        // Semicolon required here
-        if self.peek(0).kind != TokenKind::Semicolon {
-            let span = self.peek(0).span;
-            self.compiler.reports.push(
-                Report::build(ReportKind::Error, span)
-                    .with_message("unexpected token")
-                    .with_label(Label::new(span).with_message("expected SEMICOLON"))
-                    .finish(),
-            );
-        } else {
-            self.advance(1); // consume ';'
-        }
-
-        let _ = self.compiler.scopes.define_symbol(Symbol {
-            name: self.compiler.name_interner.intern(ident_name),
-            type_: type_
-                .clone()
-                .unwrap_or(self.compiler.ty_interner.intern(TyKind::Error)),
-            mut_: mutable,
-            pub_: public,
-            span: identifier_token.span.clone(),
-        });
-
-        // ASTStmt zurückgeben
-        ASTStmt::var_dec(identifier_token, public, mutable, type_, expr)
+        self.consume_check(TokenKind::Semicolon);
+        ASTStmt::var_dec(ident, mut_, ty, expr)
     }
 
-    fn parse_type(&mut self) -> Ty {
-        let ty = self.parse_type_atom();
+    fn parse_const_stmt(&mut self) -> ASTStmt {
+        let pub_ = self.parse_visibility();
+        self.consume_check(TokenKind::Keyword(Keyword::Const));
 
-        // Solange ein LAngle folgt, Generic-Argumente parsen
+        let ident_token = self.consume_identifier();
+        let ident = self.make_ident(&ident_token);
+
+        let ty = if self.peek(0).kind == TokenKind::Colon {
+            self.advance(1);
+            Some(self.parse_type())
+        } else {
+            None
+        };
+
+        self.consume_check(TokenKind::Equals);
+        let expr = self.parse_expr();
+        self.consume_check(TokenKind::Semicolon);
+
+        ASTStmt::const_dec(ident, pub_, ty, expr)
+    }
+
+    fn parse_type_alias_stmt(&mut self) -> ASTStmt {
+        let pub_ = self.parse_visibility();
+        self.consume_check(TokenKind::Keyword(Keyword::Type));
+
+        let ident_token = self.consume_identifier();
+        let ident = self.make_ident(&ident_token);
+
+        // optionale Generics: type Data<A> = ...
+        let generics = if self.peek(0).kind == TokenKind::LAngle {
+            self.parse_generic_param_defs() // <A, B> als Namen, nicht als Typen
+        } else {
+            smallvec![]
+        };
+
+        self.consume_check(TokenKind::Equals);
+        let ty = self.parse_type();
+        self.consume_check(TokenKind::Semicolon);
+
+        ASTStmt::type_alias(ident, pub_, generics, ty)
+    }
+
+    fn parse_struct_stmt(&mut self) -> ASTStmt {
+        let pub_ = self.parse_visibility();
+        self.consume_check(TokenKind::Keyword(Keyword::Struct));
+
+        let ident_token = self.consume_identifier();
+        let ident = self.make_ident(&ident_token);
+
+        let generics = if self.peek(0).kind == TokenKind::LAngle {
+            self.parse_generic_param_defs()
+        } else {
+            smallvec![]
+        };
+
+        if self.peek(0).kind == TokenKind::LCurly {
+            self.advance(1);
+            let fields = self.parse_fields(TokenKind::RCurly, Self::parse_struct_field);
+            self.consume_check(TokenKind::RCurly);
+            // no Semicolon
+            ASTStmt::struct_dec(ident, pub_, generics, fields)
+        } else if self.peek(0).kind == TokenKind::LParen {
+            self.advance(1);
+            let fields = self.parse_fields(TokenKind::RParen, Self::parse_tuple_struct_field);
+            self.consume_check(TokenKind::RParen);
+            self.consume_check(TokenKind::Semicolon); // Tuple-Struct takes ;
+            ASTStmt::tuple_struct_dec(ident, pub_, generics, fields)
+        } else {
+            // Unit struct: struct Foo;
+            self.consume_check(TokenKind::Semicolon); // Unit-Struct takes ;
+            ASTStmt::unit_struct_dec(ident, pub_)
+        }
+    }
+
+    fn parse_enum_stmt(&mut self) -> ASTStmt {
+        let pub_ = self.parse_visibility();
+        self.consume_check(TokenKind::Keyword(Keyword::Enum));
+
+        let ident_token = self.consume_identifier();
+        let ident = self.make_ident(&ident_token);
+
+        let generics = if self.peek(0).kind == TokenKind::LAngle {
+            self.parse_generic_param_defs()
+        } else {
+            smallvec![]
+        };
+
+        self.consume_check(TokenKind::LCurly);
+        let mut variants = smallvec![];
+
+        while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
+            variants.push(self.parse_enum_variant());
+        }
+
+        self.consume_check(TokenKind::RCurly);
+        ASTStmt::enum_dec(ident, pub_, generics, variants)
+    }
+
+    fn parse_enum_variant(&mut self) -> ASTEnumVariant {
+        let ident_token = self.consume_identifier();
+        let ident = self.make_ident(&ident_token);
+
+        let kind = match self.peek(0).kind {
+            TokenKind::LParen => {
+                // Tuple-Variante: A(Type, Type)
+                self.advance(1);
+                let fields = self.parse_fields(TokenKind::RParen, Self::parse_tuple_struct_field);
+                self.consume_check(TokenKind::RParen);
+                ASTEnumVariantKind::Tuple(fields)
+            }
+            TokenKind::LCurly => {
+                // Struct-Variante: C { a: T, b: U }
+                self.advance(1);
+                let fields = self.parse_fields(TokenKind::RCurly, Self::parse_struct_field);
+                self.consume_check(TokenKind::RCurly);
+                ASTEnumVariantKind::Struct(fields)
+            }
+            _ => ASTEnumVariantKind::Unit,
+        };
+
+        // optionales Komma zwischen Varianten
+        self.parse_optional_token(TokenKind::Comma);
+
+        ASTEnumVariant { ident, kind }
+    }
+
+    // fn parse_extend_stmt(&mut self) -> ASTStmt {
+    //     if self.peek(0).kind == TokenKind::Keyword(Keyword::Pub) {
+    //         let span = self.peek(0).span;
+    //         self.lexer.compiler.reports.push(
+    //             Report::build(ReportKind::Error, span)
+    //                 .with_message("`pub` is not allowed on `extend`")
+    //                 .with_label(
+    //                     Label::new(span)
+    //                         .with_message("remove `pub` here")
+    //                         .with_color(color::RED_COLOR),
+    //                 )
+    //                 .finish(),
+    //         );
+    //         self.advance(1); // konsumieren, dann normal weitermachen
+    //     }
+
+    //     // kein pub auf extend
+    //     self.consume_check(TokenKind::Keyword(Keyword::Extend));
+
+    //     let target = self.consume_identifier(); // MyStruct
+
+    //     let target_generics = if self.peek(0).kind == TokenKind::LAngle {
+    //         self.parse_generic_params()
+    //     } else {
+    //         smallvec![]
+    //     };
+
+    //     // optionaler Trait-Bound: : TraitPath<Assoc = Type>
+    //     let trait_bound = if self.parse_optional_token(TokenKind::Colon) {
+    //         Some(self.parse_trait_bound())
+    //     } else {
+    //         None
+    //     };
+
+    //     self.consume_check(TokenKind::LCurly);
+    //     let items = self.parse_extend_items();
+    //     self.consume_check(TokenKind::RCurly);
+
+    //     ASTStmt::extend(target, target_generics, trait_bound, items)
+    // }
+
+    // /// Parst Trait-Name + optionale Generics inkl. Assoziierte-Typ-Bindungen
+    // /// Beispiel: Add<T = Inst>  oder  pkg::super::Printable
+    // fn parse_trait_bound(&mut self) -> ASTTraitBound {
+    //     let path = self.parse_typath(); // pkg::super::Printable
+
+    //     let args = if self.peek(0).kind == TokenKind::LAngle {
+    //         self.lexer.add_mode(LexMode::Generic);
+    //         self.consume(); // '<'
+    //         let mut args = vec![];
+
+    //         loop {
+    //             // Assoziierter-Typ-Binding: Name = Type
+    //             if matches!(self.peek(0).kind, TokenKind::Identifier(_))
+    //                 && self.peek(1).kind == TokenKind::Equals
+    //             {
+    //                 let name = self.consume_identifier();
+    //                 self.consume(); // '='
+    //                 let ty = self.parse_type();
+    //                 args.push(ASTGenericArg::AssocType { name, ty });
+    //             } else {
+    //                 args.push(ASTGenericArg::Type(self.parse_type()));
+    //             }
+
+    //             match self.peek(0).kind {
+    //                 TokenKind::Comma => {
+    //                     self.consume();
+    //                 }
+    //                 TokenKind::RAngle => {
+    //                     self.consume();
+    //                     break;
+    //                 }
+    //                 _ => break,
+    //             }
+    //         }
+    //         self.lexer.remove_mode();
+    //         args
+    //     } else {
+    //         vec![]
+    //     };
+
+    //     ASTTraitBound { path, args }
+    // }
+
+    // fn parse_extend_items(&mut self) -> Vec<ASTExtendItem> {
+    //     let mut items = vec![];
+    //     while self.peek(0).kind != TokenKind::RCurly && self.peek(0).kind != TokenKind::EOF {
+    //         // Semicolons überspringen
+    //         while self.parse_optional_token(TokenKind::Semicolon) {}
+
+    //         match self.peek(0).kind {
+    //             TokenKind::Keyword(Keyword::Type) => {
+    //                 // type Output = Inst;
+    //                 self.consume();
+    //                 let name = self.consume_identifier();
+    //                 self.consume_check(TokenKind::Equals);
+    //                 let ty = self.parse_type();
+    //                 self.consume_check(TokenKind::Semicolon);
+    //                 items.push(ASTExtendItem::AssocType { name, ty });
+    //             }
+    //             _ => {
+    //                 // func (mit optionalem pub)
+    //                 let pub_ = self.parse_visibility();
+    //                 let func = self.parse_func_def(pub_);
+    //                 items.push(ASTExtendItem::Func(func));
+    //             }
+    //         }
+    //     }
+    //     items
+    // }
+
+    fn parse_type(&mut self) -> ASTType {
+        let mut base = self.parse_type_atom();
+
+        // Generic-Argumente
         if self.peek(0).kind == TokenKind::LAngle {
-            self.check_whitespace(self.peek(-1).span.clone(), self.peek(0).span.clone());
+            self.lexer.add_mode(LexMode::Generic);
+            let prev_span = self.backpeek(1).span;
+            let next_span = self.peek(0).span;
+            self.check_whitespace(prev_span, next_span);
 
-            let name = match *self.compiler.ty_interner.kind(ty) {
-                TyKind::Custom(n) => n,
-                _ => {
-                    let span = self.peek(-1).span;
-                    self.compiler.reports.push(
-                        Report::build(ReportKind::Error, span)
-                            .with_message("invalid generic base")
-                            .with_label(Label::new(span).with_message("expected IDENTIFIER"))
-                            .finish(),
-                    );
-                    self.compiler.symbol_interner.intern("__ERROR".into())
-                }
+            let args = self.parse_generic_params();
+
+            self.lexer.remove_mode();
+
+            base = ASTType::Generic {
+                base: Box::new(base),
+                args: args.into_vec(),
+            };
+        }
+
+        base
+    }
+
+    fn parse_type_atom(&mut self) -> ASTType {
+        if self.peek(0).kind == TokenKind::And {
+            self.advance(1);
+
+            let mutable = if self.parse_optional_token(TokenKind::Keyword(Keyword::Mut)) {
+                Mutability::Mutable
+            } else {
+                Mutability::Immutable
             };
 
-            let args = self.parse_generic_args();
-            return self
-                .compiler
-                .ty_interner
-                .intern(TyKind::Generic { base: name, args });
-        }
-
-        ty
-    }
-
-    fn parse_type_atom(&mut self) -> Ty {
-        if self.peek(0).kind == TokenKind::And {
-            self.advance(1); // '&'
-
-            if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
-                self.advance(1);
-                let inner = self.parse_type();
-                return self.compiler.ty_interner.intern(TyKind::MutRef(inner));
-            } else {
-                let inner = self.parse_type();
-                return self.compiler.ty_interner.intern(TyKind::Ref(inner));
-            }
+            let inner = self.parse_type();
+            return ASTType::Ref {
+                mutable,
+                inner: Box::new(inner),
+            };
         }
 
         let token = self.consume();
 
         match token.kind {
-            TokenKind::Type(tk) => tk,
-
             TokenKind::Identifier(name) => {
-                // Primitive als Identifier erlaubt
-                let prim = match name {
-                    "i8" => Some(Primitive::I8),
-                    "i16" => Some(Primitive::I16),
-                    "i32" => Some(Primitive::I32),
-                    "i64" => Some(Primitive::I64),
-                    "i128" => Some(Primitive::I128),
-                    "isize" => Some(Primitive::ISize),
-                    "u8" => Some(Primitive::U8),
-                    "u16" => Some(Primitive::U16),
-                    "u32" => Some(Primitive::U32),
-                    "u64" => Some(Primitive::U64),
-                    "u128" => Some(Primitive::U128),
-                    "usize" => Some(Primitive::USize),
-                    "f32" => Some(Primitive::F32),
-                    "f64" => Some(Primitive::F64),
-                    "bool" => Some(Primitive::Bool),
-                    "char" => Some(Primitive::Char),
-                    "String" => Some(Primitive::String),
-                    _ => None,
-                };
-
-                self.compiler
-                    .ty_interner
-                    .intern(prim.map(TyKind::Primitive).unwrap_or_else(|| {
-                        // Leak the string once to get a 'static reference
-                        let static_name: &'static str = name;
-                        TyKind::Custom(self.compiler.symbol_interner.intern(static_name.into()))
-                    }))
+                let mut segments = vec![name];
+                // pkg::super::Type
+                while self.peek(0).kind == TokenKind::DoubleColon {
+                    self.consume();
+                    let seg = self.consume_identifier();
+                    if let TokenKind::Identifier(s) = seg.kind {
+                        segments.push(s);
+                    }
+                }
+                if segments.len() == 1 {
+                    ASTType::Path(segments[0].clone())
+                } else {
+                    ASTType::QualifiedPath(segments)
+                }
             }
 
             TokenKind::LParen => {
-                let mut elems: SmallVec<[Ty; 2]> = SmallVec::new();
+                let mut elems = Vec::new();
 
                 if self.peek(0).kind != TokenKind::RParen {
                     loop {
@@ -538,26 +641,29 @@ impl<'a> Parser<'a> {
                 }
 
                 self.consume_check(TokenKind::RParen);
-                self.compiler.ty_interner.intern(TyKind::Tuple(elems))
+                ASTType::Tuple(elems)
             }
 
             _ => {
-                self.compiler.reports.push(
-                    Report::build(ReportKind::Error, token.span)
+                let span = self.peek(0).span;
+                self.lexer.compiler.shared.reports.push(
+                    Report::build(ReportKind::Error, span)
                         .with_message("unexpected token")
-                        .with_label(Label::new(token.span).with_message("expected TYPE"))
+                        .with_label(
+                            Label::new(span)
+                                .with_message("expected TYPE")
+                                .with_color(color::RED_COLOR),
+                        )
                         .finish(),
                 );
-                self.compiler.ty_interner.intern(TyKind::Custom(
-                    self.compiler.symbol_interner.intern("__ERROR"),
-                ))
+                ASTType::Error
             }
         }
     }
 
-    fn parse_generic_args(&mut self) -> Box<[Ty]> {
+    fn parse_generic_params(&mut self) -> SmallVec<[ASTType; 2]> {
         self.consume_check(TokenKind::LAngle);
-        let mut elems: SmallVec<[Ty; 2]> = smallvec![];
+        let mut elems = smallvec![];
 
         loop {
             elems.push(self.parse_type());
@@ -570,25 +676,15 @@ impl<'a> Parser<'a> {
                     self.consume();
                     break;
                 }
-                TokenKind::DoubleRAngle => {
-                    let tok = self.consume();
-                    self.push_back(Token {
-                        kind: TokenKind::RAngle,
-                        span: Span {
-                            start: tok.span.start + 1,
-                            end: tok.span.end,
-                            file_id: tok.span.file_id,
-                        },
-                    });
-                    break;
-                }
                 _ => {
                     let span = self.peek(0).span;
-                    self.compiler.reports.push(
+                    self.lexer.compiler.shared.reports.push(
                         Report::build(ReportKind::Error, span)
                             .with_message("unexpected token")
                             .with_label(
-                                Label::new(span).with_message("expected CLOSING ANGLE BRACKET"),
+                                Label::new(span)
+                                    .with_message("expected CLOSING ANGLE BRACKET or COMMA")
+                                    .with_color(color::RED_COLOR),
                             )
                             .finish(),
                     );
@@ -598,26 +694,65 @@ impl<'a> Parser<'a> {
             }
         }
 
-        elems.into_boxed_slice()
+        elems
+    }
+
+    fn parse_generic_param_defs(&mut self) -> SmallVec<[ASTGenericParam; 2]> {
+        self.consume_check(TokenKind::LAngle);
+        let mut params = smallvec![];
+
+        loop {
+            // Name des Typparameters (T, U, ...)
+            let ident_token = self.consume_identifier();
+            let ident = self.make_ident(&ident_token);
+
+            // optionaler Default: = Type
+            let default = if self.peek(0).kind == TokenKind::Equals {
+                self.advance(1); // '='
+                Some(self.parse_type())
+            } else {
+                None
+            };
+
+            params.push(ASTGenericParam {
+                name: ident,
+                default,
+            });
+
+            match self.peek(0).kind {
+                TokenKind::Comma => {
+                    self.advance(1);
+                }
+                TokenKind::RAngle => {
+                    self.advance(1);
+                    break;
+                }
+                _ => {
+                    let span = self.peek(0).span;
+                    self.lexer.compiler.shared.reports.push(
+                        Report::build(ReportKind::Error, span)
+                            .with_message("unexpected token")
+                            .with_label(
+                                Label::new(span)
+                                    .with_message("expected CLOSING ANGLE BRACKET or COMMA")
+                                    .with_color(color::RED_COLOR),
+                            )
+                            .finish(),
+                    );
+                    break;
+                }
+            }
+        }
+
+        params
     }
 
     fn parse_expr_stmt(&mut self) -> ASTStmt {
         let expr = self.parse_expr();
 
-        if self.peek(0).kind == TokenKind::Semicolon {
-            self.advance(1);
-            ASTStmt::expr(expr)
-        } else {
-            let span = self.peek(0).span;
-            self.compiler.reports.push(
-                Report::build(ReportKind::Error, span)
-                    .with_message("missing semicolon")
-                    .with_label(Label::new(span).with_message("expected SEMICOLON"))
-                    .finish(),
-            );
+        self.consume_check(TokenKind::Semicolon);
 
-            ASTStmt::expr(expr)
-        }
+        ASTStmt::expr(expr)
     }
 
     fn parse_expr(&mut self) -> ASTExpr {
@@ -628,7 +763,9 @@ impl<'a> Parser<'a> {
                 | TokenKind::MinusEquals
                 | TokenKind::AsteriskEquals
                 | TokenKind::SlashEquals => {
-                    return self.parse_assignment(self.peek(0));
+                    let ident_token = self.consume_identifier();
+                    let ident = self.make_ident(&ident_token);
+                    return self.parse_assignment(ident);
                 }
                 _ => {}
             }
@@ -638,42 +775,9 @@ impl<'a> Parser<'a> {
         self.parse_binary_expr(0)
     }
 
-    fn parse_assignment(&mut self, ident: Token) -> ASTExpr {
+    fn parse_assignment(&mut self, ident: Ident) -> ASTExpr {
         // Symbol prüfen
-        if let TokenKind::Identifier(ref name_str) = ident.kind {
-            let sym_id_pre = self.compiler.name_interner.intern(name_str);
-
-            match self.compiler.scopes.lookup_symbol(sym_id_pre) {
-                Some(sym_id) => {
-                    self.compiler.scopes.with_symbol(sym_id, |sym| {
-                        if !sym.mut_ {
-                            let span = ident.span;
-                            self.compiler.reports.push(
-                                Report::build(ReportKind::Error, span)
-                                    .with_message("immutable variable")
-                                    .with_label(Label::new(span).with_message("immutable"))
-                                    .with_label(
-                                        Label::new(sym.span)
-                                            .with_message("consider: make variable mutable"),
-                                    )
-                                    .finish(),
-                            );
-                        }
-                    });
-                }
-                None => {
-                    self.compiler.reports.push(
-                        Report::build(ReportKind::Error, ident.span)
-                            .with_message("undefined variable")
-                            .with_label(Label::new(ident.span))
-                            .with_help("variables must be declared before using it")
-                            .finish(),
-                    );
-                }
-            }
-        }
-
-        self.consume();
+        let _ = self.consume_identifier();
 
         // Operator lesen
         let op_tok = self.consume();
@@ -685,7 +789,7 @@ impl<'a> Parser<'a> {
         // Span
         let span = Span::merge(ident.span, rhs.span);
 
-        ASTExpr::assignment(ident, op, rhs, span)
+        ASTExpr::assignment(ident.clone(), op, rhs, span)
     }
 
     fn parse_unary_expr(&mut self) -> ASTExpr {
@@ -700,40 +804,34 @@ impl<'a> Parser<'a> {
                     // Splitte in zwei '&'
                     ops.push(ASTUnaryOperator::new(
                         ASTUnaryOperatorKind::Ref,
-                        Token {
-                            kind: TokenKind::And,
-                            span: Span::new(tok.span.start, tok.span.start + 1, tok.span.end),
-                        },
+                        Span::new(tok.span.start, tok.span.start + 1, tok.span.end),
                     ));
 
                     ops.push(ASTUnaryOperator::new(
                         ASTUnaryOperatorKind::Ref,
-                        Token {
-                            kind: TokenKind::And,
-                            span: Span::new(tok.span.start + 1, tok.span.start, tok.span.end),
-                        },
+                        Span::new(tok.span.start + 1, tok.span.start, tok.span.end),
                     ));
                 }
                 TokenKind::And => {
-                    let tok = self.consume();
+                    let span = self.consume().span;
                     if self.peek(0).kind == TokenKind::Keyword(Keyword::Mut) {
-                        self.consume();
-                        ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::RefMut, tok));
+                        self.advance(1);
+                        ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::RefMut, span));
                     } else {
-                        ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Ref, tok));
+                        ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Ref, span));
                     }
                 }
                 TokenKind::Asterisk => {
-                    let tok = self.consume();
-                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Deref, tok));
+                    let span = self.consume().span;
+                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Deref, span));
                 }
                 TokenKind::Minus => {
-                    let tok = self.consume();
-                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Negate, tok));
+                    let span = self.consume().span;
+                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Negate, span));
                 }
                 TokenKind::Exclamation => {
-                    let tok = self.consume();
-                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Not, tok));
+                    let span = self.consume().span;
+                    ops.push(ASTUnaryOperator::new(ASTUnaryOperatorKind::Not, span));
                 }
                 _ => break,
             }
@@ -744,11 +842,7 @@ impl<'a> Parser<'a> {
 
         // 3. Wende Operatoren RÜCKWÄRTS an
         for op in ops.into_iter().rev() {
-            expr = ASTExpr::unary(
-                op.clone(),
-                expr.clone(),
-                Span::merge(op.token.span, expr.span),
-            )
+            expr = ASTExpr::unary(op.clone(), expr.clone(), Span::merge(op.span, expr.span))
         }
 
         expr
@@ -759,11 +853,12 @@ impl<'a> Parser<'a> {
 
         while self.peek(0).kind == TokenKind::Keyword(Keyword::As) {
             let _ = self.consume(); // 'as'
-                                    // self.check_whitespace(expr.span.clone(), self.peek(0).span.clone());
+
+            // self.check_whitespace(expr.span, self.peek(0).span.clone());
 
             let ty = self.parse_type();
             let start = expr.span;
-            let end = self.peek(-1).span;
+            let end = self.peek(0).span;
 
             expr = ASTExpr::cast(expr, ty, Span::merge(start, end));
         }
@@ -775,7 +870,7 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_cast_expr();
 
         loop {
-            let op_token = self.peek(0);
+            let op_token = self.peek(0).clone();
             let op_kind = match &op_token.kind {
                 TokenKind::Plus => ASTBinaryOperatorKind::Add,
                 TokenKind::Minus => ASTBinaryOperatorKind::Subtract,
@@ -805,7 +900,7 @@ impl<'a> Parser<'a> {
                 _ => break,
             };
 
-            let op = ASTBinaryOperator::new(op_kind, op_token.clone());
+            let op = ASTBinaryOperator::new(op_kind, op_token.span);
             let op_prec = op.prec();
             if op_prec <= precedence {
                 break;
@@ -816,16 +911,95 @@ impl<'a> Parser<'a> {
 
             // right hand side Expression
             let right = self.parse_binary_expr(op_prec);
-            left = ASTExpr::binary(left, right, op, op_token.span);
+            let span = Span::merge(left.span, right.span);
+            left = ASTExpr::binary(left, right, op, span);
         }
 
         left
     }
 
+    /// Parst einen primären Ausdruck + alle Postfix-Operatoren.
+    /// Postfix: .field, .method(args), (args), [index], ::segment
     fn parse_primary_expr(&mut self) -> ASTExpr {
-        let token = self.consume();
+        let mut expr = self.parse_atom();
 
-        return match token.kind {
+        // Suffix-Loop
+        loop {
+            match self.peek(0).kind {
+                // Feldzugriff oder Methodenaufruf:  expr.name  /  expr.name(args)
+                TokenKind::Dot => {
+                    let _ = self.consume();
+                    let field_ident = self.consume_identifier();
+                    let field = self.make_ident(&field_ident);
+                    let field_span = field.span;
+
+                    if self.peek(0).kind == TokenKind::LParen {
+                        // Methodenaufruf: expr.method(arg1, arg2)
+                        let (args, close) = self.parse_call_args();
+                        let span = Span::merge(expr.span, close.span);
+                        expr = ASTExpr::method_call(expr, field, args, span);
+                    } else {
+                        // Feldzugriff: expr.field
+                        let span = Span::merge(expr.span, field_span);
+                        expr = ASTExpr::field_access(expr, field, span);
+                    }
+                }
+
+                // Freier Aufruf: expr(arg1, arg2)
+                TokenKind::LParen => {
+                    let (args, close) = self.parse_call_args();
+                    let span = Span::merge(expr.span, close.span);
+                    expr = ASTExpr::call(expr, args, span);
+                }
+
+                // Index-Zugriff: expr[idx]
+                TokenKind::LBracket => {
+                    self.advance(1); // '['
+                    let idx = self.parse_expr();
+                    let close = self.consume_check(TokenKind::RBracket);
+                    let span = Span::merge(expr.span, close.span);
+                    expr = ASTExpr::index(expr, idx, span);
+                }
+
+                // Pfad-Fortsetzung: expr::segment  (z.B. pkg::sub::func)
+                // Nur sinnvoll wenn expr ein Pfad/Ident ist — Typchecker klärt den Rest
+                TokenKind::DoubleColon => {
+                    self.advance(1); // '::'
+                    let ident_token = self.consume_identifier();
+                    let ident = self.make_ident(&ident_token);
+                    let span = Span::merge(expr.span, ident.span);
+                    expr = ASTExpr::path_segment(expr, ident, span);
+                }
+
+                _ => break,
+            }
+        }
+
+        expr
+    }
+
+    /// Parst eine Argumentliste: `( expr, expr, ... )`
+    fn parse_call_args(&mut self) -> (Vec<ASTExpr>, Token) {
+        self.consume_check(TokenKind::LParen);
+        let mut args = Vec::new();
+
+        while self.peek(0).kind != TokenKind::RParen && self.peek(0).kind != TokenKind::EOF {
+            args.push(self.parse_expr());
+            if self.peek(0).kind == TokenKind::Comma {
+                self.advance(1);
+            } else {
+                break;
+            }
+        }
+
+        let close = self.consume_check(TokenKind::RParen);
+        (args, close)
+    }
+
+    /// Das eigentliche Atom ohne Postfix (bisheriger parse_primary_expr-Body)
+    fn parse_atom(&mut self) -> ASTExpr {
+        let token = self.consume();
+        match token.kind {
             TokenKind::Integer(v) => ASTExpr::int(v, token.span),
             TokenKind::Float(v) => ASTExpr::float(v, token.span),
             TokenKind::Byte(v) => ASTExpr::byte(v, token.span),
@@ -834,58 +1008,61 @@ impl<'a> Parser<'a> {
             TokenKind::ByteString(v) | TokenKind::RawByteString(v) => {
                 ASTExpr::byte_string(v, token.span)
             }
-            TokenKind::Keyword(kw) => match kw {
-                Keyword::True => ASTExpr::bool(true, token.span),
-                Keyword::False => ASTExpr::bool(false, token.span),
-                _ => ASTExpr::error(token.span.file_id),
-            },
-            TokenKind::Identifier(name) => {
-                let sym_id = self.compiler.name_interner.intern(&name);
-                if self.compiler.scopes.lookup_symbol(sym_id).is_none() {
-                    self.compiler.reports.push(
-                        Report::build(ReportKind::Error, token.span)
-                            .with_message("unknown identifier")
-                            .with_label(Label::new(token.span))
-                            .finish(),
-                    );
-                    return ASTExpr::error(token.span.file_id);
+            TokenKind::Keyword(Keyword::True) => ASTExpr::bool(true, token.span),
+            TokenKind::Keyword(Keyword::False) => ASTExpr::bool(false, token.span),
+            TokenKind::Identifier(ref name) => {
+                // Makro: name!( ... )
+                if self.peek(0).kind == TokenKind::Exclamation
+                    && self.peek(1).kind == TokenKind::LParen
+                {
+                    self.advance(1); // '!'
+                    let (args, close) = self.parse_call_args();
+                    let span = Span::merge(token.span, close.span);
+                    return ASTExpr::macro_call(name.clone(), args, span);
                 }
-                ASTExpr::variable(name, token.span)
+
+                ASTExpr::variable(name.clone(), token.span)
             }
             TokenKind::LParen => {
-                let expr = self.parse_expr();
-                let rparen = self.consume();
-                if rparen.kind != TokenKind::RParen {
-                    self.compiler.reports.push(
-                        Report::build(ReportKind::Error, token.span)
-                            .with_message("unexpected token")
-                            .with_label(
-                                Label::new(token.span).with_message("expected CLOSING PAREN"),
-                            )
-                            .finish(),
-                    );
-
-                    return ASTExpr::error(token.span.file_id);
+                // Unit-Tupel () oder geklammerten Ausdruck
+                if self.peek(0).kind == TokenKind::RParen {
+                    let close = self.consume();
+                    return ASTExpr::unit(Span::merge(token.span, close.span));
                 }
-
-                ASTExpr::parenthesized(expr, Span::merge(token.span, rparen.span))
+                let expr = self.parse_expr();
+                // Tupel: (a, b, c)
+                if self.peek(0).kind == TokenKind::Comma {
+                    let mut elems = vec![expr];
+                    while self.peek(0).kind == TokenKind::Comma {
+                        self.advance(1);
+                        if self.peek(0).kind == TokenKind::RParen {
+                            break;
+                        }
+                        elems.push(self.parse_expr());
+                    }
+                    let close = self.consume_check(TokenKind::RParen);
+                    let span = Span::merge(token.span, close.span);
+                    return ASTExpr::tuple(elems, span);
+                }
+                let close = self.consume_check(TokenKind::RParen);
+                ASTExpr::parenthesized(expr, Span::merge(token.span, close.span))
             }
-            TokenKind::LCurly => self.parse_block_expr(),
-            TokenKind::Error => {
-                self.consume();
-                ASTExpr::error(token.span.file_id)
-            }
+            // WICHTIG: LCurly hier NICHT konsumieren — parse_block_expr macht das selbst.
+            // Da token schon konsumiert ist, müssen wir den Span weitergeben.
+            TokenKind::LCurly => self.parse_block_body(token),
             _ => {
-                dbg!(&token.kind);
-                self.compiler.reports.push(
+                self.lexer.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, token.span)
                         .with_message("unexpected expression")
-                        .with_label(Label::new(token.span).with_message("expected EXPRESSION"))
+                        .with_label(
+                            Label::new(token.span)
+                                .with_message("expected EXPRESSION")
+                                .with_color(color::RED_COLOR),
+                        )
                         .finish(),
                 );
-
-                return ASTExpr::error(token.span.file_id);
+                ASTExpr::error(token.span.file_id)
             }
-        };
+        }
     }
 }

@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::reports::{Cache, Source};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub file_id: usize,
     pub start: usize,

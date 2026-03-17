@@ -5,7 +5,6 @@ use bumpalo::Bump;
 use smallvec::SmallVec;
 
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Result};
 use std::hash::{Hash, Hasher};
 
 use crate::types::structs::StructId;

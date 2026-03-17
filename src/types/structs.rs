@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::scope::NameId;
-use crate::types::Ty;
 use crate::source::Span;
+use crate::types::Ty;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct StructId(pub u32);
@@ -31,11 +31,7 @@ impl StructArena {
         }
     }
 
-    pub fn alloc_placeholder(
-        &mut self,
-        name: NameId,
-        span: Span,
-    ) -> Result<StructId, ()> {
+    pub fn alloc_placeholder(&mut self, name: NameId, span: Span) -> Result<StructId, ()> {
         if self.lookup.contains_key(&name) {
             return Err(()); // doppelt definiert
         }
@@ -50,11 +46,7 @@ impl StructArena {
         Ok(id)
     }
 
-    pub fn set_fields(
-        &mut self,
-        id: StructId,
-        fields: StructFields,
-    ) {
+    pub fn set_fields(&mut self, id: StructId, fields: StructFields) {
         let decl = &mut self.structs[id.0 as usize];
 
         if decl.fields.is_some() {

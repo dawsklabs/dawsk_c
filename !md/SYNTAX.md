@@ -14,43 +14,43 @@ dec c = &&mut z;  // c: &&mut f32 (explizit); ref takes the same type (should be
 
 dec mut y: = **c; // y should then have the value of z
 
-dec(pub struct) MyStruct {
-    pub a: i8,
-    pub b: u16,
-    c: String,
+struct(pub) MyStruct {
+    a(pub): i8,
+    b(pub): u16,
+    c(pub): String,
     x: f32,
-    pub t: DynArr<u8>,
+    t(pub): DynArr<u8>,
 }
 
 impl Add for MyStruct {
-    func add(self, )
+    fn add(self, )
 }
 
-dec(pub trait) Printable {
-    func print(&self);
+trait(pub) Printable {
+    fn print(&self);
 }
 
 impl Printable for MyStruct {
-    func print(&self) {
+    fn print(&self) {
         println!("MyStruct values");
     }
 }
 
-dec(pub enum) Type {
+enum(pub) Type {
     A(i32),
     C,
 }
 
-dec(pub enum) MyEnum {
+enum(pub) MyEnum {
     A(Type),
     C,
 }
 
-dec(pub type) Age: u16;
+type(pub) Age: u16;
 
-dec(pub type) Data: (Age, String);
+type(pub) Data: (Age, String);
 
-func(pub) end() { // function is public
+fn(pub) end() { // function is public
     prc::exit(0);
 }
 ```

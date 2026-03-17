@@ -1,6 +1,88 @@
-dec aa: u8 = 0x_16__10____5__;
-aa = 5;
+pub struct MyStruct<T = i32> {
+    a: i8,
+    b: String,
+    c: T,
+};
 
-dec aa = 1.0;
-b'a';
-d = aa;
+pub const M: i16 = -15; // constants
+
+pub struct A(i8, pkg::B);
+
+pub type B<T> = (T, u8);
+
+type C<T = i32> = B<T>;
+
+struct D;
+
+pub enum TokenKind {
+    // Keywords
+    Keyword(pkg::super::a::Keyword),
+
+    // Types
+    Type(Ty),
+    Identifier(String),
+    Integer(u128),
+    Float(f64),
+    Byte(u8),
+    Char(char),
+    String(String),
+    ByteString(Vec<u8>),
+    RawString(String),
+    RawByteString(Vec<u8>),
+    Bool(bool),
+    Unknown(char),
+
+    // Operators
+    Plus,
+    Minus,
+    Asterisk,
+    Slash,
+    Percent,
+
+    DoublePlus,
+    DoubleMinus,
+
+    PlusEquals,
+    MinusEquals,
+    AsteriskEquals,
+    SlashEquals,
+
+    Equals,
+    DoubleEquals,
+    ExclamationEquals,
+
+    And,
+    Pipe,
+    Caret,
+    DoubleAnd,
+    DoublePipe,
+
+    // Punctuation
+    Dot,
+    Comma,
+    Colon,
+    Semicolon,
+    Exclamation,
+    Question,
+    Underscore,
+
+    // Brackets
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LCurly,
+    RCurly,
+
+    LAngle,
+    DoubleLAngle,
+    LAngleEquals,
+
+    RAngle,
+    DoubleRAngle,
+    RAngleEquals,
+
+    // Specials
+    Error,
+    EOF,
+}

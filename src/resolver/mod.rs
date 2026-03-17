@@ -1,74 +1,60 @@
-use crate::ast::{scope::{NameInterner, ScopeCtx}, structs::{StructArena, StructFields}, AST, ASTStmtKind, types::{InferCtx, TyInterner}, token::TokenKind};
+mod def;
 
-pub struct Resolver<'a> {
-    pub names: &'a mut NameInterner,
-    pub structs: &'a mut StructArena,
-    pub ty_interner: &'a mut TyInterner,
-    pub infer: &'a mut InferCtx,
-    pub scopes: &'a mut ScopeCtx,
+use std::marker::PhantomData;
+use std::ops::{Index, IndexMut};
+
+use self::def::{BodyArena, DefTables, ExprArena, ScopeArena};
+
+pub trait Idx {
+    fn new(idx: usize) -> Self;
+    fn index(self) -> usize;
 }
 
-impl<'a> Resolver<'a> {
-    pub fn collect_structs(&mut self, ast: &AST) {
-        for stmt in &ast.stmts {
-            match &stmt.kind {
-                ASTStmtKind::StructDec(s)
-                | ASTStmtKind::TupleStructDec(s) => {
-                    let name = self.names.intern(match &s.identifier.kind {
-                        TokenKind::Identifier(name) => name,
-                        _ => "_",
-                    });
-                    self.structs
-                        .alloc_placeholder(name, s.identifier.span.clone())
-                        .unwrap();
-                }
-                _ => {}
-            }
+pub struct IndexVec<I: Idx, T> {
+    items: Vec<T>,
+    _marker: PhantomData<I>,
+}
+
+impl<I: Idx, T> IndexVec<I, T> {
+    pub fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            _marker: PhantomData,
         }
     }
 
-    pub fn resolve_structs(&mut self, ast: &AST) {
-        for stmt in &ast.stmts {
-            match &stmt.kind {
-                ASTStmtKind::StructDec(s) => {
-                    let name = self.names.intern(match &s.identifier.kind {
-                        TokenKind::Identifier(name) => name,
-                        _ => "_",
-                    });
-                    let sid = self.structs.lookup(name).unwrap();
-
-                    let fields = s.fields.iter()
-                        .map(|f| (
-                            self.names.intern(match &s.identifier.kind {
-                                TokenKind::Identifier(name) => name,
-                                _ => "_",
-                            }),
-                            self.resolve_ty(&f.type_),
-                        ))
-                        .collect();
-
-                    self.structs
-                        .set_fields(sid, StructFields::Named(fields))
-                        .unwrap();
-                }
-
-                ASTStmtKind::TupleStructDec(s) => {
-                    let name = self.names.intern(match &s.identifier.kind {
-                        TokenKind::Identifier(name) => name,
-                        _ => "_",
-                    });
-                    let sid = self.structs.lookup(name).unwrap();
-
-                    let fields = s.fields.iter()
-                        .map(|t| self.resolve_ty(t))
-                        .collect();
-
-                    self.structs
-                        .set_fields(sid, StructFields::Tuple(fields))
-                        .unwrap();
-                }
-                _ => {}
-            }
-        }
+    pub fn push(&mut self, value: T) -> I {
+        let id = I::new(self.items.len());
+        self.items.push(value);
+        id
     }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (I, &T)> {
+        self.items.iter().enumerate().map(|(i, v)| (I::new(i), v))
+    }
+}
+
+impl<I: Idx, T> Index<I> for IndexVec<I, T> {
+    type Output = T;
+
+    fn index(&self, index: I) -> &Self::Output {
+        &self.items[index.index()]
+    }
+}
+
+impl<I: Idx, T> IndexMut<I> for IndexVec<I, T> {
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        &mut self.items[index.index()]
+    }
+}
+
+pub struct HIRCtx {
+    pub defs: DefTables,
+    pub bodies: BodyArena,
+    pub exprs: ExprArena,
+    pub scopes: ScopeArena,
 }

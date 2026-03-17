@@ -1,4 +1,4 @@
-use crate::{types::Ty, source::Span};
+use crate::{source::Span /* types::Ty */};
 use std::fmt::{Display, Formatter, Result};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,8 +13,8 @@ pub enum TokenKind {
     Keyword(Keyword),
 
     // Types
-    Type(Ty),
-    Identifier(&'static str),
+    // Type(Ty),
+    Identifier(String),
     Integer(u128),
     Float(f64),
     Byte(u8),
@@ -76,6 +76,9 @@ pub enum TokenKind {
     DoubleRAngle,
     RAngleEquals,
 
+    // Path
+    DoubleColon,
+
     // Specials
     Error,
     EOF,
@@ -84,14 +87,14 @@ pub enum TokenKind {
 impl Display for TokenKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
-            TokenKind::Type(t) => write!(f, "Type ({:?})", t),
-            TokenKind::Integer(_) => write!(f, "Int"),
-            TokenKind::Float(_) => write!(f, "Float"),
-            TokenKind::String(_) => write!(f, "String"),
-            TokenKind::Char(_) => write!(f, "Char"),
-            TokenKind::Identifier(i) => write!(f, "Identifier ({})", i),
-            TokenKind::Unknown(_) => write!(f, "<Unknown>"),
-            _ => write!(f, "{:?}", self),
+            // TokenKind::Type(_) => write!(f, "TYPE"),
+            TokenKind::Integer(_) => write!(f, "INT"),
+            TokenKind::Float(_) => write!(f, "FLOAT"),
+            TokenKind::String(_) => write!(f, "STR"),
+            TokenKind::Char(_) => write!(f, "CHAR"),
+            TokenKind::Identifier(_) => write!(f, "IDENTIFIER"),
+            TokenKind::Unknown(_) => write!(f, "<UNKNOWN>"),
+            _ => write!(f, "{}", format!("{:?}", self).to_uppercase()),
         }
     }
 }
@@ -101,9 +104,10 @@ pub enum Keyword {
     Dec,
     Pub,
     Mut,
+    Const,
     Struct,
-    Impl,
-    Self_,
+    Extend,
+    Inst,
     Type,
     Enum,
     Trait,

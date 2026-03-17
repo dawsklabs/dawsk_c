@@ -6,8 +6,8 @@ use crate::ast::{
     ASTBinaryOperatorKind, ASTExpr, ASTExprKind, ASTStmt, ASTStmtKind, ASTVarDecExpr, AST,
 };
 use crate::reports::{Label, Report, ReportBag, ReportKind};
-use crate::Compiler;
 use crate::TokenKind;
+use crate::{color, Compiler};
 
 use super::scope::{NameInterner, ScopeCtx};
 use super::traits::TraitCtx;
@@ -43,13 +43,17 @@ impl<'a> TypeChecker {
         ctx.reports.push(
             Report::build(ReportKind::Error, expr.span)
                 .with_message("mismatched types")
-                .with_label(Label::new(expr.span).with_message(format_args!(
-                        "`{}` and `{}` cannot match",
-                        ctx.ty_interner
-                            .display_with_symbols(given, ctx.symbol_interner),
-                        ctx.ty_interner
-                            .display_with_symbols(expected, ctx.symbol_interner)
-                    )))
+                .with_label(
+                    Label::new(expr.span)
+                        .with_message(format_args!(
+                            "`{}` and `{}` cannot match",
+                            ctx.ty_interner
+                                .display_with_symbols(given, ctx.symbol_interner),
+                            ctx.ty_interner
+                                .display_with_symbols(expected, ctx.symbol_interner)
+                        ))
+                        .with_color(color::RED_COLOR),
+                )
                 .finish(),
         );
     }
@@ -96,7 +100,9 @@ impl<'a> TypeChecker {
                         Report::build(ReportKind::Warning, expr.span)
                             .with_message("unused expression result")
                             .with_label(
-                                Label::new(expr.span).with_message("consider: `dec _ = ...;`"),
+                                Label::new(expr.span)
+                                    .with_message("consider: `dec _ = ...;`")
+                                    .with_color(color::YELLOW_COLOR),
                             )
                             .finish(),
                     );
@@ -127,7 +133,7 @@ impl<'a> TypeChecker {
         let bool_ty = InferTy::Known(ctx.ty_interner.intern(TyKind::Primitive(Bool)));
         let u8_tid = ctx.ty_interner.intern(TyKind::Primitive(U8));
 
-        match expr.kind.as_ref() {
+        match &expr.kind {
             ASTExprKind::Error => err_ty,
 
             ASTExprKind::Integer(value) => {
@@ -169,13 +175,17 @@ impl<'a> TypeChecker {
                 args: Box::new([u8_tid]),
             })),
             ASTExprKind::Parenthesized(expr) => self.check_expr(ctx, &expr.expr, None),
-            ASTExprKind::Variable(name) => {
+            ASTExprKind::Variable(_, name) => {
                 let sym_id_pre = ctx.name_interner.intern(&name);
                 let Some(sym_id) = ctx.scopes.lookup_symbol(sym_id_pre) else {
                     ctx.reports.push(
                         Report::build(ReportKind::Error, expr.span)
                             .with_message("unknown identifier")
-                            .with_label(Label::new(expr.span).with_message("undeclared variable"))
+                            .with_label(
+                                Label::new(expr.span)
+                                    .with_message("undeclared variable")
+                                    .with_color(color::RED_COLOR),
+                            )
                             .finish(),
                     );
 
@@ -248,8 +258,8 @@ impl<'a> TypeChecker {
 
                     // Assign-BinOps wie +=, -=
                     AddAssign | SubtractAssign | MultiplyAssign | DivideAssign => {
-                        let Some(lhs_sym_id) = (match bin.left.kind.as_ref() {
-                            ASTExprKind::Variable(name) => {
+                        let Some(lhs_sym_id) = (match &bin.left.kind {
+                            ASTExprKind::Variable(_, name) => {
                                 let sym_id_pre = ctx.name_interner.intern(&name);
                                 ctx.scopes.lookup_current(sym_id_pre)
                             }
@@ -259,7 +269,9 @@ impl<'a> TypeChecker {
                                 Report::build(ReportKind::Error, expr.span)
                                     .with_message("invalid assignment target")
                                     .with_label(
-                                        Label::new(expr.span).with_message("cannot assign to here"),
+                                        Label::new(expr.span)
+                                            .with_message("cannot assign to here")
+                                            .with_color(color::RED_COLOR),
                                     )
                                     .finish(),
                             );
@@ -272,7 +284,11 @@ impl<'a> TypeChecker {
                             ctx.reports.push(
                                 Report::build(ReportKind::Error, expr.span)
                                     .with_message("assign to immutable variable")
-                                    .with_label(Label::new(expr.span).with_message("immutable"))
+                                    .with_label(
+                                        Label::new(expr.span)
+                                            .with_message("immutable")
+                                            .with_color(color::RED_COLOR),
+                                    )
                                     .finish(),
                             );
 
@@ -297,7 +313,11 @@ impl<'a> TypeChecker {
                     ctx.reports.push(
                         Report::build(ReportKind::Error, expr.span)
                             .with_message("invalid assignment target")
-                            .with_label(Label::new(expr.span).with_message("cannot assign to here"))
+                            .with_label(
+                                Label::new(expr.span)
+                                    .with_message("cannot assign to here")
+                                    .with_color(color::RED_COLOR),
+                            )
                             .finish(),
                     );
 
@@ -305,11 +325,15 @@ impl<'a> TypeChecker {
                 };
 
                 // check mutability
-                if !ctx.scopes.is_mutable(sym_id) {
+                if ctx.scopes.is_mutable(sym_id) {
                     ctx.reports.push(
                         Report::build(ReportKind::Error, expr.span)
                             .with_message("assign to immutable variable")
-                            .with_label(Label::new(expr.span).with_message("immutable"))
+                            .with_label(
+                                Label::new(expr.span)
+                                    .with_message("immutable")
+                                    .with_color(color::RED_COLOR),
+                            )
                             .finish(),
                     );
 
@@ -557,11 +581,11 @@ impl<'a> TypeChecker {
         let final_ty = ctx.infer_ctx.resolve_to_ty(ctx.ty_interner, init_ty);
 
         let _ = ctx.scopes.define_symbol(Symbol {
-            name: ctx.name_interner.intern(name),
+            name: ctx.name_interner.intern(name.as_str()),
             type_: final_ty,
             mut_: dec.mut_,
             pub_: dec.pub_,
-            span: dec.identifier.span.clone(),
+            span: dec.identifier.span,
         });
     }
 
@@ -573,7 +597,7 @@ impl<'a> TypeChecker {
             _ => return false,
         };
 
-        match expr.kind.as_ref() {
+        match &expr.kind {
             // explizite Side-Effects
             Assignment(_) => true,
 
@@ -616,7 +640,7 @@ impl<'a> TypeChecker {
     fn expr_has_side_effect(&self, expr: &ASTExpr) -> bool {
         use ASTExprKind::*;
 
-        match expr.kind.as_ref() {
+        match &expr.kind {
             Assignment(_) => true,
 
             // Call(_) => true,

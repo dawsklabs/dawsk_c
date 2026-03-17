@@ -1,6 +1,7 @@
 use std::io;
 use std::ops::Range;
 
+use crate::color::Color;
 use crate::reports::renderer::{StreamAwareFmt, StreamType, WrappedWriter};
 use crate::reports::source::Cache;
 use crate::reports::{
@@ -200,9 +201,16 @@ impl<S: Span, K: ReportStyle> Report<S, K> {
         // --- Header ---
 
         let code = self.code.as_ref().map(|c| format!("[{c}] "));
-        let id = format_args!("{}{}:", Show(code), self.kind);
+        let id = format_args!("{}{}", Show(code), self.kind);
         let kind_color = self.kind.get_color(&self.config);
-        writeln!(w, "{} {}", id.fg(kind_color, s), Show(self.msg.as_ref()))?;
+        writeln!(
+            w,
+            "{}{}: {}{}",
+            Color::Bold,
+            id.fg(kind_color, s),
+            Show(self.msg.as_ref()),
+            Color::ResetBold
+        )?;
 
         let groups = self.get_source_groups(&mut cache);
 
@@ -754,7 +762,7 @@ impl<S: Span, K: ReportStyle> Report<S, K> {
                             }
                         } else {
                             write!(w, "{}", c.fg(color, s))?;
-                        };
+                        }
                     }
                 }
                 writeln!(w)?;

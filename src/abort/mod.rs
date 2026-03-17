@@ -1,14 +1,15 @@
-use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
-pub static ABORT: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
+pub static ABORT: OnceLock<AtomicBool> = OnceLock::new();
 
-#[inline]
 pub fn abort() {
-    ABORT.store(true, Ordering::SeqCst);
+    // Initialisieren, falls noch nicht passiert
+    let flag = ABORT.get_or_init(|| AtomicBool::new(false));
+    flag.store(true, Ordering::SeqCst);
 }
 
-#[inline]
 pub fn is_aborted() -> bool {
-    ABORT.load(Ordering::SeqCst)
+    let flag = ABORT.get_or_init(|| AtomicBool::new(false));
+    flag.load(Ordering::SeqCst)
 }

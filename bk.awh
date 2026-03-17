@@ -1,0 +1,136 @@
+import std::io::prc::{inst, src::Age};
+import pkg::indented::A;
+import pkg::super::super;
+
+pub const GRR_H: u8 = b'e'; // constants
+const GRR_T: u8 = b't'; // constants
+dec m: i8 = -15; // variables
+
+dec mut x: f32 = 18e-0f32;
+
+dec t: f32 = 4 - 0.3;
+
+dec mut z: f32 = x + t; // 'pub' not available!, 'mut' is...
+
+dec c = &mut z;  // c: &&mut f32 (explizit); ref takes the same type (should be logical) but as ref...
+
+dec mut y: A = **c; // y should then have the value of z
+
+pub struct MyStruct {
+    a: i8,
+    b: String,
+}
+
+pub trait Add<T = Inst> {
+    type Output;
+
+    func add(&mut inst, other: T) -> Inst::Output;
+}
+
+extend MyStruct: Add<Inst> {
+    type Output = Inst;
+
+    func add(&inst, other: T) -> Inst::Output {
+        Inst {
+            a: inst.a + other.a,
+            b: inst.b.concat(other.b),
+        }
+    }
+}
+
+pub trait Printable {
+    func print(&inst);
+}
+
+extend MyStruct: pkg::super::Printable {
+    func print(&inst) {
+        println!(b"MyStruct values");
+    }
+}
+
+pub enum MyEnum {
+    A(pkg::super::Type),
+    B,
+    C { a: pkg::Type, b: Type },
+}
+
+pub enum TokenKind {
+    // Keywords
+    Keyword(pkg::super::a::Keyword),
+
+    // Types
+    Type(Ty),
+    Identifier(String),
+    Integer(u128),
+    Float(f64),
+    Byte(u8),
+    Char(char),
+    String(String),
+    ByteString(Vec<u8>),
+    RawString(String),
+    RawByteString(Vec<u8>),
+    Bool(bool),
+    Unknown(char),
+
+    // Operators
+    Plus,
+    Minus,
+    Asterisk,
+    Slash,
+    Percent,
+
+    DoublePlus,
+    DoubleMinus,
+
+    PlusEquals,
+    MinusEquals,
+    AsteriskEquals,
+    SlashEquals,
+
+    Equals,
+    DoubleEquals,
+    ExclamationEquals,
+
+    And,
+    Pipe,
+    Caret,
+    DoubleAnd,
+    DoublePipe,
+
+    // Punctuation
+    Dot,
+    Comma,
+    Colon,
+    Semicolon,
+    Exclamation,
+    Question,
+    Underscore,
+
+    // Brackets
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LCurly,
+    RCurly,
+
+    LAngle,
+    DoubleLAngle,
+    LAngleEquals,
+
+    RAngle,
+    DoubleRAngle,
+    RAngleEquals,
+
+    // Specials
+    Error,
+    EOF,
+}
+
+pub type Age = u16;
+
+pub type Data<A> = (A, pkg::super::a::Id);
+
+pub func end() { // function is public
+    prc::exit(0);
+}

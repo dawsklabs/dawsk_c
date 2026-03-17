@@ -5,6 +5,8 @@ use crate::types::Ty;
 
 use std::{collections::HashMap, hash::Hash};
 
+use super::{Mutability, Visibility};
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
 
@@ -59,8 +61,8 @@ impl NameInterner {
 pub struct Symbol {
     pub name: NameId,
     pub type_: Ty,
-    pub mut_: bool,
-    pub pub_: bool,
+    pub mut_: Mutability,
+    pub pub_: Visibility,
     pub span: Span,
 }
 
@@ -341,6 +343,6 @@ impl ScopeCtx {
     }
 
     pub fn is_mutable(&self, id: SymbolId) -> bool {
-        self.with_symbol(id, |s| s.mut_)
+        self.with_symbol(id, |s| s.mut_ == Mutability::Mutable)
     }
 }
