@@ -1,8 +1,4 @@
-// z.B. in lib.rs oder debug.rs
-use std::sync::{
-    atomic::{AtomicBool, AtomicU8, Ordering},
-    OnceLock,
-};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 pub mod step {
     pub const TOKEN: u8 = 1;
@@ -29,8 +25,6 @@ macro_rules! debug {
         }
     };
 }
-
-pub static INPUT_FILE: OnceLock<String> = OnceLock::new();
 
 pub static DEBUG_ENABLE: AtomicBool = AtomicBool::new(false);
 

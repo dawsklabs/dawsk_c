@@ -1,6 +1,6 @@
-import std::io::prc::{inst, src::Age};
-import pkg::indented::A;
-import pkg::super::super;
+import std.io.prc.{inst, src.Age};
+import pkg.indented.A;
+import pkg.a;
 
 pub const GRR_H: u8 = b'e'; // constants
 const GRR_T: u8 = b't'; // constants
@@ -24,7 +24,7 @@ pub struct MyStruct {
 pub trait Add<T = Inst> {
     type Output;
 
-    func add(&mut inst, other: T) -> Inst::Output;
+    func add(&inst, other: T) -> Inst::Output;
 }
 
 extend MyStruct: Add<Inst> {
@@ -42,21 +42,21 @@ pub trait Printable {
     func print(&inst);
 }
 
-extend MyStruct: pkg::super::Printable {
+extend MyStruct: pkg.printable.Printable {
     func print(&inst) {
         println!(b"MyStruct values");
     }
 }
 
 pub enum MyEnum {
-    A(pkg::super::Type),
+    A(Type),
     B,
-    C { a: pkg::Type, b: Type },
+    C { a: pkg.types.Type, b: pkg.types.Type },
 }
 
 pub enum TokenKind {
     // Keywords
-    Keyword(pkg::super::a::Keyword),
+    Keyword(a.Keyword),
 
     // Types
     Type(Ty),
@@ -129,8 +129,8 @@ pub enum TokenKind {
 
 pub type Age = u16;
 
-pub type Data<A> = (A, pkg::super::a::Id);
+pub type Data<A> = (A, pkg.a.Id);
 
 pub func end() { // function is public
-    prc::exit(0);
+    std.process.exit(0);
 }

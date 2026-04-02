@@ -5,6 +5,8 @@ pub mod token;
 // pub mod traits;
 pub mod visitor;
 // pub mod typechecker;
+pub mod expander;
+pub mod macros;
 pub mod strings;
 
 use std::fmt::{self, Display, Formatter};
@@ -12,10 +14,10 @@ use std::io;
 use std::result::Result;
 
 use crate::ast::strings::{StringId, StringPool};
+use crate::ast::token::{NumSuffix, TokenKind};
 use crate::ast::visitor::{ASTPrinter, ASTVisitor, Colors};
-use crate::source::Span;
+use crate::source::{Span, SpanSource};
 use smallvec::SmallVec;
-use token::TokenKind;
 
 // use crate::ast::scope::NameId;
 
@@ -25,9 +27,7 @@ pub struct AST {
 
 impl AST {
     pub fn new() -> Self {
-        Self {
-            items: Vec::new(),
-        }
+        Self { items: Vec::new() }
     }
 
     pub fn add_item(&mut self, item: ASTItem) {
@@ -65,16 +65,16 @@ pub enum ASTItem {
     // später: Fn, Struct, etc.
 }
 
-#[derive(Debug, Clone)]
-pub struct ASTUse {
-    pub path: Box<[String]>,
-    pub alias: Option<String>,
-}
+// #[derive(Debug, Clone)]
+// pub struct ASTUse {
+//     pub path: Box<[String]>,
+//     pub alias: Option<String>,
+// }
 
-#[derive(Debug, Clone)]
-pub struct ASTMod {
-    pub name: String,
-}
+// #[derive(Debug, Clone)]
+// pub struct ASTMod {
+//     pub name: String,
+// }
 
 #[derive(Debug, Clone)]
 pub enum ASTStmtKind {
@@ -87,6 +87,8 @@ pub enum ASTStmtKind {
     UnitStructDec(ASTUnitStructDecExpr),
     EnumDec(ASTEnumDecExpr),
     TypeAliasDec(ASTTypeAliasDecExpr),
+    FuncDec(ASTFuncDecExpr),
+    MacroDec(ASTMacroDecExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -172,12 +174,44 @@ impl ASTStmt {
             ident, pub_, generics, ty,
         )))
     }
+
+    pub fn func_dec(
+        ident: Ident,
+        pub_: Publicity,
+        generics: SmallVec<[ASTGenericParam; 2]>,
+        params: SmallVec<[ASTFuncParam; 4]>,
+        return_ty: Option<ASTType>,
+        body: Box<ASTBlockExpr>,
+    ) -> Self {
+        Self::new(ASTStmtKind::FuncDec(ASTFuncDecExpr {
+            ident,
+            pub_,
+            generics,
+            params,
+            return_ty,
+            body,
+        }))
+    }
+
+    pub fn macro_dec(
+        ident: Ident,
+        pub_: Publicity,
+        rules: Vec<ASTMacroRule>,
+        bracket_kind: MacroBracketKind,
+    ) -> Self {
+        Self::new(ASTStmtKind::MacroDec(ASTMacroDecExpr {
+            ident,
+            pub_,
+            rules,
+            bracket_kind,
+        }))
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum ASTExprKind {
-    Integer(u128),
-    Float(f64),
+    Integer(u128, Option<NumSuffix>),
+    Float(f64, Option<NumSuffix>),
     Byte(u8),            // b''
     Char(char),          // ''
     String(String),      // "", r""
@@ -204,8 +238,8 @@ pub enum ASTExprKind {
 impl Display for ASTExprKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            ASTExprKind::Integer(_) => write!(f, "Integer"),
-            ASTExprKind::Float(_) => write!(f, "Float"),
+            ASTExprKind::Integer(..) => write!(f, "Integer"),
+            ASTExprKind::Float(..) => write!(f, "Float"),
             ASTExprKind::Byte(_) => write!(f, "Byte Char"),
             ASTExprKind::Char(_) => write!(f, "Char"),
             ASTExprKind::String(_) => write!(f, "String"),
@@ -242,12 +276,12 @@ impl ASTExpr {
         Self { kind, span }
     }
 
-    pub fn int(value: u128, span: Span) -> Self {
-        Self::new(ASTExprKind::Integer(value), span)
+    pub fn int(value: u128, suffix: Option<NumSuffix>, span: Span) -> Self {
+        Self::new(ASTExprKind::Integer(value, suffix), span)
     }
 
-    pub fn float(value: f64, span: Span) -> Self {
-        Self::new(ASTExprKind::Float(value), span)
+    pub fn float(value: f64, suffix: Option<NumSuffix>, span: Span) -> Self {
+        Self::new(ASTExprKind::Float(value, suffix), span)
     }
 
     pub fn byte(value: u8, span: Span) -> Self {
@@ -285,18 +319,14 @@ impl ASTExpr {
         Self::new(ASTExprKind::Cast(ASTCastExpr::new(expr, target)), span)
     }
 
-    pub fn assignment(target: Ident, op: TokenKind, value: ASTExpr, span: Span) -> Self {
-        let op_kind = match op {
-            TokenKind::Equals => ASTBinaryOperatorKind::Assign,
-            TokenKind::PlusEquals => ASTBinaryOperatorKind::AddAssign,
-            TokenKind::MinusEquals => ASTBinaryOperatorKind::SubtractAssign,
-            TokenKind::AsteriskEquals => ASTBinaryOperatorKind::MultiplyAssign,
-            TokenKind::SlashEquals => ASTBinaryOperatorKind::DivideAssign,
-            _ => unreachable!(),
-        };
-
+    pub fn assignment(
+        target: ASTExpr,
+        op: ASTBinaryOperatorKind,
+        value: ASTExpr,
+        span: Span,
+    ) -> Self {
         Self::new(
-            ASTExprKind::Assignment(ASTAssignmentExpr::new(target, op_kind, value)),
+            ASTExprKind::Assignment(ASTAssignmentExpr::new(target, op, value)),
             span,
         )
     }
@@ -383,11 +413,14 @@ impl ASTExpr {
     }
 
     pub fn error(file_id: usize) -> Self {
-        Self::new(ASTExprKind::Error, Span::new(0, 0, file_id))
+        Self::new(
+            ASTExprKind::Error,
+            Span::new(0, 0, file_id, SpanSource::Source),
+        )
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Ident {
     pub id: StringId, // or Rc<str> for owned
     pub span: Span,
@@ -401,8 +434,7 @@ impl Ident {
 
 #[derive(Debug, Clone)]
 pub enum ASTType {
-    Path(String), // Foo
-    QualifiedPath(Vec<String>),
+    Path(Vec<Ident>),
     Ref {
         mutable: Mutability,
         inner: Box<ASTType>,
@@ -415,7 +447,7 @@ pub enum ASTType {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Publicity {
     Public,
     Private,
@@ -741,16 +773,87 @@ impl ASTTypeAliasDecExpr {
 }
 
 #[derive(Debug, Clone)]
+pub struct ASTMacroDecExpr {
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub rules: Vec<ASTMacroRule>,
+    pub bracket_kind: MacroBracketKind,
+}
+
+/// Eine einzelne Regel: (pattern) => { body }
+#[derive(Debug, Clone)]
+pub struct ASTMacroRule {
+    pub pattern: Vec<MacroPatToken>,
+    pub body: Vec<MacroBodyToken>,
+}
+
+/// Token im Pattern
+#[derive(Debug, Clone)]
+pub enum MacroPatToken {
+    /// exact match
+    Literal(TokenKind),
+    /// $name:kind
+    Capture {
+        name: StringId,
+        kind: CaptureKind,
+        span: Span,
+    },
+    /// $(...sep)* or +
+    Repetition {
+        tokens: Vec<MacroPatToken>,
+        separator: Option<TokenKind>,
+        kind: RepKind,
+    },
+}
+
+/// Token im Body
+#[derive(Debug, Clone)]
+pub enum MacroBodyToken {
+    /// Direkt in Output
+    Literal(TokenKind, Span),
+    /// $name einsetzen
+    Var(StringId, Span),
+    /// $(...sep)* oder +
+    Repetition {
+        tokens: Vec<MacroBodyToken>,
+        separator: Option<TokenKind>,
+        kind: RepKind,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureKind {
+    Expr,
+    Ident,
+    Ty,
+    Literal,
+    Stmt,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RepKind {
+    ZeroOrMore, // *
+    OneOrMore,  // +
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MacroBracketKind {
+    Paren,  // ()
+    Square, // []
+    Curly,  // {}
+}
+
+#[derive(Debug, Clone)]
 pub struct ASTAssignmentExpr {
-    pub target: Ident,
-    op: ASTBinaryOperatorKind,
+    pub target: Box<ASTExpr>,
+    pub op: ASTBinaryOperatorKind,
     pub value: Box<ASTExpr>,
 }
 
 impl ASTAssignmentExpr {
-    pub fn new(target: Ident, op: ASTBinaryOperatorKind, value: ASTExpr) -> Self {
+    pub fn new(target: ASTExpr, op: ASTBinaryOperatorKind, value: ASTExpr) -> Self {
         Self {
-            target,
+            target: Box::new(target),
             op,
             value: Box::new(value),
         }
@@ -898,4 +1001,28 @@ pub struct ASTMacroCallExpr {
 #[derive(Debug, Clone)]
 pub struct ASTTupleExpr {
     pub elems: Vec<ASTExpr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTFuncDecExpr {
+    pub ident: Ident,
+    pub pub_: Publicity,
+    pub generics: SmallVec<[ASTGenericParam; 2]>,
+    pub params: SmallVec<[ASTFuncParam; 4]>,
+    pub return_ty: Option<ASTType>,
+    pub body: Box<ASTBlockExpr>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ASTFuncParam {
+    Receiver {
+        mutable: Mutability, // &inst vs &mut inst
+        span: Span,
+    },
+    Named {
+        ident: Ident,
+        mutable: Mutability,
+        ty: ASTType,
+        span: Span,
+    },
 }

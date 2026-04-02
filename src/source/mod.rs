@@ -9,18 +9,36 @@ use unicode_width::UnicodeWidthStr;
 use crate::reports::{Cache, Source};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MacroId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanSource {
+    Source,
+    Macro(MacroId),
+}
+
+pub struct MacroData {
+    pub call_site: Span,
+    pub def_site: Span,
+}
+
+pub type FileId = usize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
-    pub file_id: usize,
+    pub file_id: FileId,
     pub start: usize,
     pub end: usize,
+    pub source: SpanSource,
 }
 
 impl Span {
-    pub fn new(start: usize, end: usize, file_id: usize) -> Self {
+    pub fn new(start: usize, end: usize, file_id: usize, source: SpanSource) -> Self {
         Self {
             file_id,
             start,
             end,
+            source,
         }
     }
 
@@ -30,6 +48,7 @@ impl Span {
             file_id: a.file_id,
             start: a.start.min(b.start),
             end: b.end.max(a.end),
+            source: if a.source == b.source { a.source } else { SpanSource::Source },
         }
     }
 
@@ -122,11 +141,22 @@ impl SourceFile {
 
 pub struct SourceMap {
     files: Vec<SourceFile>,
+    macros: Vec<MacroData>,
 }
 
 impl SourceMap {
     pub fn new() -> Self {
-        Self { files: Vec::new() }
+        Self {
+            files: Vec::new(),
+            macros: Vec::new(),
+        }
+    }
+
+    /// Registriert eine Makro-Expansion und gibt eine ID zurück
+    pub fn register_macro(&mut self, call_site: Span, def_site: Span) -> SpanSource {
+        let id = self.macros.len();
+        self.macros.push(MacroData { call_site, def_site });
+        SpanSource::Macro(MacroId(id))
     }
 
     pub fn add_file(&mut self, name: String, text: String) -> usize {
@@ -137,6 +167,11 @@ impl SourceMap {
 
     pub fn file(&self, id: usize) -> &SourceFile {
         &self.files[id]
+    }
+
+    /// Holt die Makro-Daten anhand der ID
+    pub fn get_macro_data(&self, id: MacroId) -> &MacroData {
+        &self.macros[id.0]
     }
 
     pub fn span_info(&self, span: Span) -> SpanInfo<'_> {

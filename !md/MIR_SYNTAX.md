@@ -1,81 +1,68 @@
-```c
 fn _f0 (args i32:a, i32:b) i32 {
-// Locals:
-// _0 = return value
-// _1 = a
-// _2 = b
-// _3 = Point {x, y}
-// _4 = &mut _3.x
-// _5 = & _3
-// _6 = array [i32; 3]
-// _7 = &mut _6[1]
-// _8 = temporary
-// _9 = bool
-
-bb0:
+  bb0:
     // copy args into locals (optional, but common)
-    move _1, P:a // move _l:a into _1
-    move _2, P:b
+    move $0, P:a // move _l:a into _1
+    move $0, P:b
 
     // struct creation^
-    assign _3.x, _1
-    assign _3.y, _2
+    assign $3.x, $1
+    assign $3.y, $2
 
     // immutable borrow of whole struct
-    borrow _5, ref _3
+    borrow $5, ref $3
 
     // mutable borrow of field
-    borrowm _4, mref _3.x
-    assign dref _4, (bin:add dref _4, 10)
+    borrowm $4, mref $3.x
+    assign dref $4, (bin:add dref $4, 0xA)
 
     // read via immutable borrow
-    assign _8, load _5.x
+    assign $8, load $5.x
 
     // array creation
     // alloc on 'stack' or 'heap'
-    assign _6, alloc [i32; 3]
-    assign _6[0], 1
-    assign _6[1], 2
-    assign _6[2], 3
+    assign $6, alloc [i32; 0x3]
+    assign $6[0x0], 0x1
+    assign $6[0x1], 0x2
+    assign $6[0x2], 0x3
 
     // borrow element
-    borrowm _7, mref _6[1]
-    assign dref _7, (bin:mul dref _7, 5)
+    borrowm $7, mref $6[0x1]
+    assign dref $7, (bin:mul dref $7, 0x5)
 
     // condition
-    assign _9, (cmp:gt _8, 0)
-    _9 ? jmp bb1, jmp bb2
+    assign $9, (cmp:gt $8, 0x0)
+    $9 ? jmp bb1, jmp bb2
 
-bb1:
+  bb1:
     // call a function (e.g. _f1)
-    assign _0, call _f1 (args _8, _6[1])
+    assign $0, call $f1 (args $8, $6[0x1])
 
     // jump to label
     jmp bb4
 
-bb2:
+  bb2:
     // loop-like control flow
-    assign _0, 0
+    assign $0, 0x0
     jmp bb3
 
-bb3:
+  bb3:
     // loop body (simplified)
-    assign _6[0], (bin:add _6[0], 1)
-    assign _6[2], (bin:sub _6[2], 1)
+    assign $6[0x0], (bin:add $6[0x0], 0x1)
+    assign $6[0x2], (bin:sub $6[0x2], 0x1)
 
     // break condition
-    assign _9, (cmp:eq _6[2], 0)
-    _9 ? jmp bb4, jmp bb3
+    assign $9, (cmp:eq $6[0x2], 0x0)
+    $9 ? jmp bb4, jmp bb3
 
-bb4:
+  bb4:
     // drop mutable borrow (implicit in NLL, but explicit here)
-    dropm _4
+    dropm $4
 
     // drop immutable borrow
-    drop _5
+    drop $5
 
     // return
-    ret _0
+    ret $0
 }
 
 fn _f1 (args i32:a, i32:b) i32 {
@@ -85,15 +72,14 @@ fn _f1 (args i32:a, i32:b) i32 {
 
 bb0:
     // moving values
-    move _1, P:a
-    move _2, P:b
+    move $1, P:a
+    move $2, P:b
 
     // addition
-    assign _0, (bin:add _1, _2)
-    ret _0
+    assign $0, (bin:add $1, $2)
+    ret $0
 }
 
 !begin unsafe
-assign _3, dref _rawptr
+assign $3, dref $rawptr
 !end unsafe
-```

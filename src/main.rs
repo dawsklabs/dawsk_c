@@ -9,7 +9,6 @@ mod source;
 // mod types;
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use ast::parser::Parser;
 // use ast::scope::{NameInterner /*, ScopeCtx */};
@@ -22,6 +21,10 @@ use source::SourceMap;
 // use types::{/* SymbolInterner, */ TyInterner};
 
 use crate::args::ArgumentParser;
+use crate::ast::macros::SyntaxContextTable;
+use crate::ast::strings::StringPool;
+
+use std::path::PathBuf;
 
 #[derive(Default)]
 pub struct SharedCtx {
@@ -41,6 +44,8 @@ impl SharedCtx {
 pub struct Compiler {
     pub shared: Arc<SharedCtx>,
     pub sourcemap: SourceMap,
+    pub syntax_contexts: SyntaxContextTable,
+    pub string_pool: StringPool,
 }
 
 fn main() {
@@ -53,9 +58,21 @@ fn main() {
         std::fs::read_to_string("main.awh").unwrap(),
     );
 
+    let entry = PathBuf::from("main.awh");
+
+    if !entry.exists() {
+        eprintln!("error: '{}' not found", entry.display());
+        std::process::exit(1);
+    }
+
     let shared = Arc::new(SharedCtx::new());
 
-    let mut compiler = Compiler { shared, sourcemap };
+    let mut compiler = Compiler {
+        shared,
+        sourcemap,
+        syntax_contexts: SyntaxContextTable::new(),
+        string_pool: StringPool::new(),
+    };
 
     // compiler
     //     .trait_ctx
@@ -70,7 +87,7 @@ fn main() {
     }
 
     if args::step_enabled(args::step::AST) {
-        ast.visualize(&parser.string_pool);
+        ast.visualize(&compiler.string_pool);
     }
 
     // TypeChecker

@@ -1,32 +1,33 @@
 # Syntax
 
-```rs
-dec(const) m: u8 = b'e'; // constants
+
+
+dec(const m: u8 = b'e'; // constants
 dec m: i8 = -15; // variables
 
 dec mut x: f32 = 18e-1;
 
-dec(pub) t: f32 = 4 - 0.3;
+dec t: f32 = 4 - 0.3;
 
-dec(pub) mut z: f32 = x + t; // first 'pub', 'mut' afterwards
+dec mut z: f32 = x + t; // first 'pub', 'mut' afterwards
 
 dec c = &&mut z;  // c: &&mut f32 (explizit); ref takes the same type (should be logical) but as ref...
 
 dec mut y: = **c; // y should then have the value of z
 
-struct(pub) MyStruct {
-    a(pub): i8,
-    b(pub): u16,
-    c(pub): String,
+pub struct MyStruct {
+    pub a: i8,
+    pub b: u16,
+    pub c: String,
     x: f32,
-    t(pub): DynArr<u8>,
+    pub t: DynArr\<u8>,
 }
 
 impl Add for MyStruct {
-    fn add(self, )
+    fn add(self, ...)
 }
 
-trait(pub) Printable {
+pub trait Printable {
     fn print(&self);
 }
 
@@ -36,21 +37,20 @@ impl Printable for MyStruct {
     }
 }
 
-enum(pub) Type {
+pub enum Type {
     A(i32),
     C,
 }
 
-enum(pub) MyEnum {
+pub enum MyEnum {
     A(Type),
     C,
 }
 
-type(pub) Age: u16;
+pub type Age: u16;
 
-type(pub) Data: (Age, String);
+pub type Data: (Age, String);
 
-fn(pub) end() { // function is public
-    prc::exit(0);
+pub fn end() { // function is public
+    process.exit(0);
 }
-```

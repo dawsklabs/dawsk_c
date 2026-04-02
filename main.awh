@@ -19,6 +19,10 @@ pub struct Token {
     pub span: Span,
 }
 
+func a(mut x: i32) -> i32 {
+    x + 1 // return statement
+}
+
 pub enum TokenKind {
     // Keywords
     Keyword(pkg::super::a::Keyword),
@@ -91,3 +95,9 @@ pub enum TokenKind {
     Error,
     EndOfFile,
 }
+
+macro add {
+    ($($x:expr),*) => { (0 $(+ $x)*) };
+}
+
+dec result = add!{1, 2, 3, 5, 4};

@@ -1,4 +1,4 @@
-use std::{fmt::{Display, Formatter, Result}, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 use const_format::concatcp;
 
 use crate::args::COLOR_ENABLE;

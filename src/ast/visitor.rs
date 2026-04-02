@@ -7,10 +7,10 @@ use crate::ast::strings::{StringId, StringPool};
 use crate::ast::{
     ASTAssignmentExpr, ASTBinaryExpr, ASTBlockExpr, ASTCallExpr, ASTCastExpr, ASTConstDecExpr,
     ASTEnumDecExpr, ASTEnumVariant, ASTEnumVariantKind, ASTExpr, ASTExprKind, ASTFieldAccessExpr,
-    ASTGenericParam, ASTIndexExpr, ASTMacroCallExpr, ASTMethodCallExpr, ASTParenExpr,
-    ASTPathSegmentExpr, ASTStmt, ASTStmtKind, ASTStructDecExpr, ASTStructField, ASTTupleExpr,
-    ASTTupleStructDecExpr, ASTTupleStructField, ASTType, ASTTypeAliasDecExpr, ASTUnaryExpr,
-    ASTUnitStructDecExpr, ASTVarDecExpr, Mutability, Publicity,
+    ASTFuncDecExpr, ASTFuncParam, ASTGenericParam, ASTIndexExpr, ASTMacroCallExpr,
+    ASTMethodCallExpr, ASTParenExpr, ASTPathSegmentExpr, ASTStmt, ASTStmtKind, ASTStructDecExpr,
+    ASTStructField, ASTTupleExpr, ASTTupleStructDecExpr, ASTTupleStructField, ASTType,
+    ASTTypeAliasDecExpr, ASTUnaryExpr, ASTUnitStructDecExpr, ASTVarDecExpr, Mutability, Publicity,
 };
 use crate::color::{
     c, BLUE_COLOR, BOLD, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, RESET, SUBTEXT_COLOR,
@@ -37,6 +37,8 @@ pub fn walk_stmt<V: ASTVisitor + ?Sized>(v: &mut V, stmt: &ASTStmt) -> Result<()
         ASTStmtKind::UnitStructDec(expr) => v.visit_unit_struct_dec(expr),
         ASTStmtKind::EnumDec(expr) => v.visit_enum_dec(expr),
         ASTStmtKind::TypeAliasDec(expr) => v.visit_type_alias(expr),
+        ASTStmtKind::FuncDec(expr) => v.visit_func_dec(expr),
+        ASTStmtKind::MacroDec(_expr) => Ok(()),
     }
 }
 
@@ -47,8 +49,8 @@ pub fn walk_stmt<V: ASTVisitor + ?Sized>(v: &mut V, stmt: &ASTStmt) -> Result<()
 /// while adding pre- or post-processing.
 pub fn walk_expr<V: ASTVisitor + ?Sized>(v: &mut V, expr: &ASTExpr) -> Result<(), V::Error> {
     match &expr.kind {
-        ASTExprKind::Integer(_)
-        | ASTExprKind::Float(_)
+        ASTExprKind::Integer(..)
+        | ASTExprKind::Float(..)
         | ASTExprKind::Byte(_)
         | ASTExprKind::Char(_)
         | ASTExprKind::String(_)
@@ -130,19 +132,19 @@ fn escape_char(out: &mut impl Write, c: char) -> io::Result<()> {
 ///
 /// The returned `String` uses ANSI escape codes from the `color` module and is
 /// intended to be embedded directly in [`format_args!`] calls inside the printer.
-fn format_type(ty: &ASTType, col: &Colors) -> String {
+fn format_type(ty: &ASTType, col: &Colors, string_pool: &StringPool) -> String {
     match ty {
-        ASTType::Path(n) => format!("{}{}{}", col.yellow, n, col.reset),
-        ASTType::QualifiedPath(ids) => {
+        ASTType::Path(idents) => {
             let mut s = String::new();
-            for (i, id) in ids.iter().enumerate() {
+            for (i, ident) in idents.iter().enumerate() {
                 if i > 0 {
                     s.push_str(&format!("{}:{}", col.subtext, col.reset));
                 }
-                if ["pkg", "super"].contains(&id.as_ref()) {
-                    s.push_str(&format!("{}{}{}", col.lavender, id, col.reset));
+                let ident_str = string_pool.get(ident.id).unwrap();
+                if ["pkg", "super"].contains(&ident_str) {
+                    s.push_str(&format!("{}{}{}", col.lavender, &ident_str, col.reset));
                 } else {
-                    s.push_str(&format!("{}{}{}", col.yellow, id, col.reset));
+                    s.push_str(&format!("{}{}{}", col.yellow, &ident_str, col.reset));
                 }
             }
             s
@@ -153,16 +155,21 @@ fn format_type(ty: &ASTType, col: &Colors) -> String {
                     "{}&mut{} {}",
                     col.lavender,
                     col.reset,
-                    format_type(inner, col)
+                    format_type(inner, col, string_pool)
                 )
             } else {
-                format!("{}&{}{}", col.lavender, col.reset, format_type(inner, col))
+                format!(
+                    "{}&{}{}",
+                    col.lavender,
+                    col.reset,
+                    format_type(inner, col, string_pool)
+                )
             }
         }
         ASTType::Tuple(elems) => {
             let inner = elems
                 .iter()
-                .map(|t| format_type(t, col))
+                .map(|t| format_type(t, col, string_pool))
                 .collect::<Vec<_>>()
                 .join(&format!("{},{} ", col.subtext, col.reset));
             format!(
@@ -173,12 +180,12 @@ fn format_type(ty: &ASTType, col: &Colors) -> String {
         ASTType::Generic { base, args } => {
             let args_s = args
                 .iter()
-                .map(|t| format_type(t, col))
+                .map(|t| format_type(t, col, string_pool))
                 .collect::<Vec<_>>()
                 .join(&format!("{},{} ", col.subtext, col.reset));
             format!(
                 "{}{}<{}{}{}>{}",
-                format_type(base, col),
+                format_type(base, col, string_pool),
                 col.subtext,
                 col.reset,
                 args_s,
@@ -231,6 +238,13 @@ pub trait ASTVisitor {
     /// without allocation.
     fn publicity_str(&self, vis: &Publicity) -> &'static str;
 
+    /// Returns a human-readable string representation of a [`Mutability`] value.
+    ///
+    /// Returns `"0x1 (true)"` for [`Publicity::Public`] and `"0x0 (false)"` otherwise.
+    /// The return value is `&'static str` so it can be embedded into `format_args!`
+    /// without allocation.
+    fn mutablility_str(&self, vis: &Mutability) -> &'static str;
+
     /// Visits a list of generic type parameter definitions (e.g. `<T, U = Default>`).
     ///
     /// The list may be empty; implementations should handle that case gracefully.
@@ -277,6 +291,15 @@ pub trait ASTVisitor {
 
     /// Visits a type alias declaration (`type Name = Type;`).
     fn visit_type_alias(&mut self, expr: &ASTTypeAliasDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits a type alias declaration (`func Name { ... }`).
+    fn visit_func_dec(&mut self, expr: &ASTFuncDecExpr) -> Result<(), Self::Error>;
+
+    /// Visits a type alias declaration (`func Name { ... }`).
+    fn visit_func_params(&mut self, expr: &SmallVec<[ASTFuncParam; 4]>) -> Result<(), Self::Error>;
+
+    /// Visits the functions body (`{ stmts... [tail] }`).
+    fn visit_func_body(&mut self, expr: &ASTBlockExpr) -> Result<(), Self::Error>;
 
     /// Visits a binary expression (`lhs op rhs`).
     ///
@@ -484,7 +507,7 @@ impl<'a, W: Write> ASTPrinter<'a, W> {
     fn label_sub(&mut self, label: &str) -> io::Result<()> {
         let (subtext, reset) = (self.color.subtext, self.color.reset);
         self.write_line(
-            LineKind::Normal,
+            LineKind::Sub,
             format_args!("{}{}{}:", subtext, label, reset),
         )
     }
@@ -513,12 +536,20 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_expr(&mut self, expr: &ASTExpr) -> Result<(), Self::Error> {
-        self.label_sub("expression")?;
+        self.label("expression")?;
         self.indented(|s| walk_expr(s, expr))
     }
 
     fn publicity_str(&self, vis: &Publicity) -> &'static str {
         if *vis == Publicity::Public {
+            "0x1 (true)"
+        } else {
+            "0x0 (false)"
+        }
+    }
+
+    fn mutablility_str(&self, mutbl: &Mutability) -> &'static str {
+        if *mutbl == Mutability::Mutable {
             "0x1 (true)"
         } else {
             "0x0 (false)"
@@ -542,7 +573,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                         s.line(format_args!(
                             "{} (def){}",
                             name,
-                            format_type(default, &s.color)
+                            format_type(default, &s.color, s.string_pool)
                         ))?;
                     }
                     None => s.line(format_args!("{}", name))?,
@@ -560,8 +591,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                 "{}operator{}: {}{}{}",
                 subtext, reset, blue, expr.operator.kind, reset
             ))?;
-            s.visit_expr(&expr.left)?;
-            s.visit_expr(&expr.right)
+            s.label("left")?;
+            s.indented(|s| s.visit_expr(&expr.left))?;
+            s.label("right")?;
+            s.indented(|s| s.visit_expr(&expr.right))
         })
     }
 
@@ -571,19 +604,11 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     }
 
     fn visit_assignment_expr(&mut self, expr: &ASTAssignmentExpr) -> Result<(), Self::Error> {
-        let (subtext, lavendar, blue, reset) = (
-            self.color.subtext,
-            self.color.lavender,
-            self.color.blue,
-            self.color.reset,
-        );
-        let name = self.get_name(expr.target.id).to_owned();
+        let (subtext, blue, reset) = (self.color.subtext, self.color.blue, self.color.reset);
         self.label("assignment")?;
         self.indented(|s| {
-            s.line(format_args!(
-                "{}to{}: {}{}{}",
-                subtext, reset, lavendar, name, reset
-            ))?;
+            s.line(format_args!("{}to{}:", subtext, reset))?;
+            s.visit_expr(&expr.target)?;
             s.line(format_args!(
                 "{}operator{}: {}{}{}",
                 subtext, reset, blue, expr.op, reset
@@ -606,17 +631,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("var")?;
         self.indented(|s| {
             s.ident_line(&name)?;
+            let mut_ = s.mutablility_str(&expr.mut_).to_owned();
             s.line_sub(format_args!(
-                "{}mutable{}: {}{}{}",
-                subtext,
-                reset,
-                red,
-                if expr.mut_ == Mutability::Mutable {
-                    "0x1 (true)"
-                } else {
-                    "0x0 (false)"
-                },
-                reset
+                "{}mut{}: {}{}{}",
+                subtext, reset, red, mut_, reset
             ))?;
             if let Some(ty) = &expr.ty {
                 s.visit_type(ty)?;
@@ -732,7 +750,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.indented(|s| {
             s.ident_line(&name)?;
             let pub_ = s.publicity_str(&expr.pub_);
-            s.line(format_args!(
+            s.line_sub(format_args!(
                 "{}pub{}: {}{}{}",
                 subtext, reset, red, pub_, reset
             ))?;
@@ -798,6 +816,78 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
             ))?;
             s.visit_generics(&expr.generics)?;
             s.visit_type(&expr.ty)
+        })
+    }
+
+    fn visit_func_params(
+        &mut self,
+        params: &SmallVec<[ASTFuncParam; 4]>,
+    ) -> Result<(), Self::Error> {
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
+        self.label_sub("params")?;
+        self.indented(|s| {
+            for param in params.iter() {
+                match param {
+                    ASTFuncParam::Receiver { mutable, span: _ } => {
+                        s.ident_line("inst")?;
+                        let mut_ = s.mutablility_str(mutable);
+                        s.line_sub(format_args!(
+                            "{}mut{}: {}{}{}",
+                            subtext, reset, red, mut_, reset
+                        ))?;
+                    }
+                    ASTFuncParam::Named {
+                        ident,
+                        mutable,
+                        ty,
+                        span: _,
+                    } => {
+                        let param_name = s.get_name(ident.id).to_owned();
+                        s.ident_line(&param_name)?;
+                        s.visit_type(ty)?;
+                        let mut_ = s.mutablility_str(mutable);
+                        s.line_sub(format_args!(
+                            "{}mut{}: {}{}{}",
+                            subtext, reset, red, mut_, reset
+                        ))?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn visit_func_dec(&mut self, expr: &ASTFuncDecExpr) -> Result<(), Self::Error> {
+        let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
+        let name = self.get_name(expr.ident.id).to_owned();
+        self.label("func")?;
+        self.indented(|s| {
+            s.ident_line(&name)?;
+            let pub_ = s.publicity_str(&expr.pub_);
+            s.line_sub(format_args!(
+                "{}pub{}: {}{}{}",
+                subtext, reset, red, pub_, reset
+            ))?;
+            s.visit_generics(&expr.generics)?;
+            s.visit_func_params(&expr.params)?;
+            if let Some(ty) = &expr.return_ty {
+                s.visit_type(ty)?;
+            }
+            s.visit_func_body(&expr.body)
+        })
+    }
+
+    fn visit_func_body(&mut self, expr: &ASTBlockExpr) -> Result<(), Self::Error> {
+        self.label_sub("body")?;
+        self.indented(|s| {
+            for stmt in expr.stmts.iter() {
+                s.visit_stmt(stmt)?;
+            }
+            if let Some(expr) = &expr.tail {
+                s.label("tail")?;
+                s.indented(|s| s.visit_expr(expr))?;
+            }
+            Ok(())
         })
     }
 
@@ -947,7 +1037,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
 
     fn visit_type(&mut self, ty: &ASTType) -> Result<(), Self::Error> {
         let (subtext, reset) = (self.color.subtext, self.color.reset);
-        let s = format_type(ty, &self.color);
+        let s = format_type(ty, &self.color, self.string_pool);
         self.line_sub(format_args!("{}type{}: {}", subtext, reset, s))
     }
 
@@ -966,10 +1056,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
             self.color.reset,
         );
         match kind {
-            ASTExprKind::Integer(v) => {
+            ASTExprKind::Integer(v, _) => {
                 self.line_sub(format_args!("{}int{}({}{}{})", bl, rs, pc, v, rs))
             }
-            ASTExprKind::Float(v) => {
+            ASTExprKind::Float(v, _) => {
                 self.line_sub(format_args!("{}float{}({}{}{})", bl, rs, pc, v, rs))
             }
             ASTExprKind::Byte(v) => {

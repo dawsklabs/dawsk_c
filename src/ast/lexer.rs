@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 
 use super::token::{Keyword, Token, TokenKind};
+use crate::ast::macros::SyntaxContext;
+use crate::ast::token::NumSuffix;
 use crate::color::{RED_COLOR, YELLOW_COLOR};
 use crate::reports::{Label, Report, ReportKind};
-use crate::source::Span;
+use crate::source::{Span, SpanSource};
 use crate::Compiler;
 
 #[derive(Clone, Copy)]
@@ -54,7 +56,8 @@ impl<'a> Lexer<'a> {
     fn create_token(&mut self, kind: TokenKind, start: usize, end: usize) -> Token {
         Token {
             kind,
-            span: Span::new(start, end, self.file_id),
+            span: Span::new(start, end, self.file_id, SpanSource::Source),
+            ctx: SyntaxContext::ROOT,
         }
     }
 
@@ -107,6 +110,7 @@ impl<'a> Lexer<'a> {
             Some(b'-') => match self.peek(1) {
                 Some(b'-') => (TokenKind::DoubleMinus, 2),
                 Some(b'=') => (TokenKind::MinusEquals, 2),
+                Some(b'>') => (TokenKind::Arrow, 2),
                 _ => (TokenKind::Minus, 1),
             },
             Some(b'*') => match self.peek(1) {
@@ -130,6 +134,7 @@ impl<'a> Lexer<'a> {
             Some(b'%') => (TokenKind::Percent, 1),
             Some(b'=') => match self.peek(1) {
                 Some(b'=') => (TokenKind::DoubleEquals, 2),
+                Some(b'>') => (TokenKind::FatArrow, 2),
                 _ => (TokenKind::Equals, 1),
             },
             Some(b'&') => match self.peek(1) {
@@ -174,16 +179,18 @@ impl<'a> Lexer<'a> {
             },
             Some(b';') => (TokenKind::Semicolon, 1),
 
-            Some(b'"') => self.read_string(), // normale Strings
-            Some(b'\'') => self.read_char(),  // Char-Literal
+            Some(b'"') => self.read_string(), // normal string literal
+            Some(b'\'') => self.read_char(),  // normal char literal
 
             Some(b'_') => (TokenKind::Underscore, 1),
+
+            Some(b'$') => (TokenKind::Dollar, 1),
 
             Some(c) if (c as char).is_ascii_alphabetic() => self.read_identifier_or_keyword(),
             Some(c) if (c as char).is_numeric() => self.read_number(),
 
             Some(_) => {
-                let span = Span::new(self.pos, self.pos + 1, self.file_id);
+                let span = Span::new(self.pos, self.pos + 1, self.file_id, SpanSource::Source);
                 self.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, span)
                         .with_label(
@@ -220,7 +227,7 @@ impl<'a> Lexer<'a> {
         // First character must be a letter
         if let Some(c) = self.peek(0) {
             if !(c as char).is_ascii_alphabetic() && c != b'_' {
-                let span = Span::new(self.pos, self.pos + 1, self.file_id);
+                let span = Span::new(self.pos, self.pos + 1, self.file_id, SpanSource::Source);
                 self.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, span)
                         .with_message("invalid identifier start")
@@ -246,30 +253,67 @@ impl<'a> Lexer<'a> {
             .iter()
             .map(|&b| b as char)
             .collect();
-        let kind = match raw.as_str() {
-            "dec" => TokenKind::Keyword(Keyword::Dec), // e.g. dec x: i8 = 16;
-            "mut" => TokenKind::Keyword(Keyword::Mut), // mutable
-            "pub" => TokenKind::Keyword(Keyword::Pub), // pub = public
-            "const" => TokenKind::Keyword(Keyword::Const),
-            "struct" => TokenKind::Keyword(Keyword::Struct),
-            "extend" => TokenKind::Keyword(Keyword::Extend),
-            "inst" => TokenKind::Keyword(Keyword::Inst), // instance reference
-            "type" => TokenKind::Keyword(Keyword::Type),
-            "enum" => TokenKind::Keyword(Keyword::Enum),
-            "trait" => TokenKind::Keyword(Keyword::Trait), // trait = interface
-            "func" => TokenKind::Keyword(Keyword::Func),
-            "as" => TokenKind::Keyword(Keyword::As), // casting
-            "for" => TokenKind::Keyword(Keyword::For),
-            "while" => TokenKind::Keyword(Keyword::While),
-            "if" => TokenKind::Keyword(Keyword::If),
-            "else" => TokenKind::Keyword(Keyword::Else),
-            "in" => TokenKind::Keyword(Keyword::In),
-            "false" => TokenKind::Keyword(Keyword::False),
-            "true" => TokenKind::Keyword(Keyword::True),
+        let kind = match raw.as_bytes() {
+            b"dec" => TokenKind::Keyword(Keyword::Dec), // e.g. dec x: i8 = 16;
+            b"mut" => TokenKind::Keyword(Keyword::Mut), // mutable
+            b"pub" => TokenKind::Keyword(Keyword::Pub), // pub = public
+            b"const" => TokenKind::Keyword(Keyword::Const),
+            b"struct" => TokenKind::Keyword(Keyword::Struct),
+            b"extend" => TokenKind::Keyword(Keyword::Extend),
+            b"inst" => TokenKind::Keyword(Keyword::Inst), // instance reference
+            b"type" => TokenKind::Keyword(Keyword::Type),
+            b"enum" => TokenKind::Keyword(Keyword::Enum),
+            b"trait" => TokenKind::Keyword(Keyword::Trait), // trait = interface
+            b"func" => TokenKind::Keyword(Keyword::Func),
+            b"macro" => TokenKind::Keyword(Keyword::Macro),
+            b"as" => TokenKind::Keyword(Keyword::As), // casting
+            b"for" => TokenKind::Keyword(Keyword::For),
+            b"while" => TokenKind::Keyword(Keyword::While),
+            b"if" => TokenKind::Keyword(Keyword::If),
+            b"else" => TokenKind::Keyword(Keyword::Else),
+            b"in" => TokenKind::Keyword(Keyword::In),
+            b"false" => TokenKind::Keyword(Keyword::False),
+            b"true" => TokenKind::Keyword(Keyword::True),
             _ => TokenKind::Identifier(raw),
         };
 
         (kind, i)
+    }
+
+    fn read_num_suffix(&mut self, offset: usize) -> (Option<NumSuffix>, usize) {
+        let mut len = 0;
+        while let Some(c) = self.peek(offset + len) {
+            if (c as char).is_ascii_alphanumeric() {
+                len += 1;
+            } else {
+                break;
+            }
+        }
+        if len == 0 {
+            return (None, 0);
+        }
+        let raw: String = self.input()[self.pos + offset..self.pos + offset + len]
+            .iter()
+            .map(|&b| b as char)
+            .collect();
+        match NumSuffix::parse(&raw) {
+            Some(s) => (Some(s), len),
+            None => {
+                let span = Span::new(
+                    self.pos + offset,
+                    self.pos + offset + len,
+                    self.file_id,
+                    SpanSource::Source,
+                );
+                self.compiler.shared.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message(format!("unknown numeric suffix `{raw}`"))
+                        .with_label(Label::new(span).with_color(RED_COLOR))
+                        .finish(),
+                );
+                (None, len)
+            }
+        }
     }
 
     fn read_number(&mut self) -> (TokenKind, usize) {
@@ -336,6 +380,7 @@ impl<'a> Lexer<'a> {
                         start + leading_us[0],
                         start + leading_us[leading_us.len() - 1] + 1,
                         self.file_id,
+                        SpanSource::Source,
                     );
 
                     self.compiler.shared.reports.push(
@@ -358,6 +403,7 @@ impl<'a> Lexer<'a> {
                         start + trailing_us[0],
                         start + trailing_us[trailing_us.len() - 1] + 1,
                         self.file_id,
+                        SpanSource::Source,
                     );
                     self.compiler.shared.reports.push(
                         Report::build(ReportKind::Warning, span)
@@ -405,7 +451,8 @@ impl<'a> Lexer<'a> {
 
                 for (s, e) in groups.iter() {
                     if e - s >= 1 {
-                        let span = Span::new(start + s, start + e + 1, self.file_id);
+                        let span =
+                            Span::new(start + s, start + e + 1, self.file_id, SpanSource::Source);
 
                         labels.push(Label::new(span).with_color(YELLOW_COLOR));
                     }
@@ -425,7 +472,7 @@ impl<'a> Lexer<'a> {
 
         // ---------- ERRORS ----------
         if !saw_digit {
-            let span = Span::new(start, start + i, self.file_id);
+            let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
             self.compiler.shared.reports.push(
                 Report::build(ReportKind::Error, span)
                     .with_message("non-supported digit(s) found in numeric literal")
@@ -440,7 +487,7 @@ impl<'a> Lexer<'a> {
         }
 
         if invalid_found {
-            let span = Span::new(start, start + i, self.file_id);
+            let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
             self.compiler.shared.reports.push(
                 Report::build(ReportKind::Error, span)
                     .with_message("invalid digit(s) in literal")
@@ -455,14 +502,17 @@ impl<'a> Lexer<'a> {
         }
 
         // ---------- PARSE ----------
-        let raw = &self.input()[start + prefix_len..start + i];
+        let (suffix, suffix_len) = self.read_num_suffix(i);
+        i += suffix_len;
+
+        let raw = &self.input()[start + prefix_len..start + i - suffix_len];
         let mut text: String = raw.iter().map(|&b| b as char).collect();
         text.retain(|c| c != '_');
 
         match u128::from_str_radix(&text, radix) {
-            Ok(v) => (TokenKind::Integer(v), i),
+            Ok(v) => (TokenKind::Integer(v, suffix), i),
             Err(_) => {
-                let span = Span::new(start, start + i, self.file_id);
+                let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
                 self.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, span)
                         .with_message("digits not storable")
@@ -500,15 +550,18 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let raw = &self.input()[start..start + i];
+        let (suffix, suffix_len) = self.read_num_suffix(i);
+        i += suffix_len;
+
+        let raw = &self.input()[start..start + i - suffix_len];
         let mut text: String = raw.iter().map(|&b| b as char).collect();
         text.retain(|c| c != '_');
 
         if has_dot || text.contains('e') || text.contains('E') {
             match text.parse::<f64>() {
-                Ok(v) => (TokenKind::Float(v), i),
+                Ok(v) => (TokenKind::Float(v, suffix), i),
                 Err(_) => {
-                    let span = Span::new(start, start + i, self.file_id);
+                    let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
                     self.compiler.shared.reports.push(
                         Report::build(ReportKind::Error, span)
                             .with_message("invalid floating-point literal")
@@ -524,9 +577,9 @@ impl<'a> Lexer<'a> {
             }
         } else {
             match text.parse::<u128>() {
-                Ok(v) => (TokenKind::Integer(v), i),
+                Ok(v) => (TokenKind::Integer(v, suffix), i),
                 Err(_) => {
-                    let span = Span::new(start, start + i, self.file_id);
+                    let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
                     self.compiler.shared.reports.push(
                         Report::build(ReportKind::Error, span)
                             .with_message("invalid integer literal")
@@ -560,7 +613,7 @@ impl<'a> Lexer<'a> {
                     Some(other) => other as char, // unknown escape, interpret as literal
                     None => {
                         // EndOfFile nach \
-                        let span = Span::new(start, start + i, self.file_id);
+                        let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
                         self.compiler.shared.reports.push(
                             Report::build(ReportKind::Error, span)
                                 .with_message("unterminated or invalid escape in char literal")
@@ -574,7 +627,7 @@ impl<'a> Lexer<'a> {
             Some(byte) => byte as char,
             None => {
                 // EndOfFile direkt nach '
-                let span = Span::new(start, start + i, self.file_id);
+                let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
                 self.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, span)
                         .with_message("unvalid char literal")
@@ -596,7 +649,7 @@ impl<'a> Lexer<'a> {
             i += 1;
             (TokenKind::Char(c), i)
         } else {
-            let span = Span::new(start, start + i, self.file_id);
+            let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
             self.compiler.shared.reports.push(
                 Report::build(ReportKind::Error, span)
                     .with_message("unterminated char literal")
@@ -638,7 +691,7 @@ impl<'a> Lexer<'a> {
             return (TokenKind::Byte(value), i);
         }
 
-        let span = Span::new(start, start + i, self.file_id);
+        let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("invalid byte char literal")
@@ -687,7 +740,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let span = Span::new(start, start + i, self.file_id);
+        let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
@@ -722,7 +775,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let span = Span::new(start, start + i, self.file_id);
+        let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
@@ -771,7 +824,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let span = Span::new(start, start + i, self.file_id);
+        let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
@@ -796,7 +849,7 @@ impl<'a> Lexer<'a> {
             i += 1;
         }
 
-        let span = Span::new(start, start + i, self.file_id);
+        let span = Span::new(start, start + i, self.file_id, SpanSource::Source);
         self.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message("unterminated string literal")
