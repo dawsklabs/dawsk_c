@@ -1,3 +1,5 @@
+pub mod expander;
+
 /// Eindeutige ID für eine Macro-Expansion
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExpansionId(pub u32);

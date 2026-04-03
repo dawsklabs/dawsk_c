@@ -2,27 +2,21 @@ mod abort;
 mod args;
 mod ast;
 mod color;
-// mod modules;
+mod lexer;
+mod macros;
+mod parser;
+mod module;
 mod reports;
-// mod resolver;
 mod source;
-// mod types;
 
 use std::sync::Arc;
 
-use ast::parser::Parser;
-// use ast::scope::{NameInterner /*, ScopeCtx */};
-// use ast::traits::TraitCtx;
-// use ast::typechecker::TypeChecker;
-use ast::{ASTItem, AST};
 use reports::ReportBag;
 use source::SourceMap;
-// use types::inference::InferCtx;
-// use types::{/* SymbolInterner, */ TyInterner};
 
 use crate::args::ArgumentParser;
-use crate::ast::macros::SyntaxContextTable;
 use crate::ast::strings::StringPool;
+use crate::macros::SyntaxContextTable;
 
 use std::path::PathBuf;
 
@@ -48,51 +42,36 @@ pub struct Compiler {
     pub string_pool: StringPool,
 }
 
+#[cfg(feature = "bench")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() {
+    #[cfg(feature = "bench")]
+    let _profiler = dhat::Profiler::new_heap();
+
     ArgumentParser::parse();
 
-    let mut sourcemap = SourceMap::new();
-
-    let file_id = sourcemap.add_file(
-        "main.awh".into(),
-        std::fs::read_to_string("main.awh").unwrap(),
-    );
-
-    let entry = PathBuf::from("main.awh");
-
+    let entry = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/src/main.awh");
     if !entry.exists() {
         eprintln!("error: '{}' not found", entry.display());
         std::process::exit(1);
     }
 
     let shared = Arc::new(SharedCtx::new());
-
     let mut compiler = Compiler {
         shared,
-        sourcemap,
+        sourcemap: SourceMap::new(),
         syntax_contexts: SyntaxContextTable::new(),
         string_pool: StringPool::new(),
     };
 
-    // compiler
-    //     .trait_ctx
-    //     .gen_default_traits(&mut compiler.ty_interner);
-
-    // Parser
-    let mut parser = Parser::new(&mut compiler, file_id);
-
-    let mut ast = AST::new();
-    while let Some(stmt) = parser.next_stmt() {
-        ast.add_item(ASTItem::Stmt(stmt));
-    }
+    let mut collector = module::ModuleCollector::new();
+    let ast = collector.collect(&mut compiler, entry);
 
     if args::step_enabled(args::step::AST) {
         ast.visualize(&compiler.string_pool);
     }
-
-    // TypeChecker
-    // let tc = TypeChecker::new();
-    // tc.check(&mut compiler, &ast);
 
     let _ = compiler
         .shared

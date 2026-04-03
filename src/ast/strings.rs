@@ -39,18 +39,13 @@ impl StringPool {
     /// Interned einen String oder gibt existierende ID zurück
     pub fn intern(&mut self, s: impl AsRef<str>) -> StringId {
         let s = s.as_ref();
-
-        // Früher Return falls schon vorhanden
         if let Some(&id) = self.lookup.get(s) {
             return id;
         }
-
-        // Neu hinzufügen
         let id = StringId(self.arena.len() as u32);
-        let arc_str: Arc<str> = Arc::from(s);
-        self.arena.push(arc_str.clone());
-        self.lookup.insert(arc_str, id);
-
+        let arc: Arc<str> = Arc::from(s);
+        self.arena.push(Arc::clone(&arc)); // clone = nur Pointer-Klon
+        self.lookup.insert(arc, id);
         id
     }
 

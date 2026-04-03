@@ -1,7 +1,7 @@
 use std::{
     convert::Infallible,
     fmt::{Debug, Display},
-    ops::Range,
+    ops::Range, path::PathBuf, sync::Arc,
 };
 
 use unicode_width::UnicodeWidthStr;
@@ -78,7 +78,7 @@ impl From<Span> for (usize, Range<usize>) {
 }
 
 pub struct SpanInfo<'a> {
-    pub file: &'a str,
+    pub file: &'a PathBuf,
     pub line: usize,
     pub column: usize,
     pub line_text: &'a str,
@@ -86,16 +86,18 @@ pub struct SpanInfo<'a> {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SourceFile {
-    pub name: String,
-    pub text: String,
-    pub source: Source<String>,
+    pub entry: PathBuf,
+    pub source: Source<Arc<str>>,
     line_starts: Vec<usize>,
 }
 
 impl SourceFile {
-    pub fn new(name: String, text: String) -> Self {
+    pub fn new(entry: PathBuf) -> Self {
+        let text: Arc<str> = std::fs::read_to_string(&entry)
+            .unwrap()
+            .into();  // String -> Arc<str>, keine Kopie
+        
         let mut line_starts = vec![0];
-
         for (i, c) in text.char_indices() {
             if c == '\n' {
                 line_starts.push(i + 1);
@@ -103,15 +105,14 @@ impl SourceFile {
         }
 
         Self {
-            name,
-            text: text.clone(),
-            source: Source::from(text.clone()),
+            entry,
+            source: Source::from(Arc::clone(&text)), // nur Pointer-Klon
             line_starts,
         }
     }
 
     pub fn line_col(&self, pos: usize) -> (usize, usize) {
-        let pos = pos.min(self.text.len());
+        let pos = pos.min(self.source.len);
 
         let line_idx = match self.line_starts.binary_search(&pos) {
             Ok(i) => i,
@@ -120,7 +121,7 @@ impl SourceFile {
 
         let line_start = self.line_starts[line_idx];
 
-        let slice = &self.text[line_start..pos];
+        let slice = &self.source.text[line_start..pos];
         let col = UnicodeWidthStr::width(slice);
 
         (line_idx + 1, col + 1)
@@ -132,10 +133,10 @@ impl SourceFile {
         let end = if line < self.line_starts.len() {
             self.line_starts[line] - 1
         } else {
-            self.text.len()
+            self.source.len
         };
 
-        &self.text[start..end]
+        &self.source.text[start..end]
     }
 }
 
@@ -159,9 +160,9 @@ impl SourceMap {
         SpanSource::Macro(MacroId(id))
     }
 
-    pub fn add_file(&mut self, name: String, text: String) -> usize {
+    pub fn add_file(&mut self, entry: PathBuf) -> usize {
         let id = self.files.len();
-        self.files.push(SourceFile::new(name, text));
+        self.files.push(SourceFile::new(entry));
         id
     }
 
@@ -179,7 +180,7 @@ impl SourceMap {
         let (line, col) = file.line_col(span.start);
 
         SpanInfo {
-            file: &file.name,
+            file: &file.entry,
             line,
             column: col,
             line_text: file.get_line(line),
@@ -188,7 +189,7 @@ impl SourceMap {
 }
 
 impl Cache<usize> for SourceMap {
-    type Storage = String;
+    type Storage = Arc<str>;
 
     #[allow(refining_impl_trait)]
     fn fetch(&mut self, id: &usize) -> Result<&Source<Self::Storage>, Infallible> {
@@ -196,6 +197,6 @@ impl Cache<usize> for SourceMap {
     }
 
     fn display<'a>(&self, id: &'a usize) -> Option<impl Display + 'a> {
-        Some(self.files[*id].name.clone())
+        Some(self.files[*id].entry.to_string_lossy().into_owned())
     }
 }

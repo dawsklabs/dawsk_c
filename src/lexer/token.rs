@@ -1,4 +1,4 @@
-use crate::{ast::macros::SyntaxContext, source::Span /* types::Ty */};
+use crate::{ast::strings::StringId, macros::SyntaxContext, source::Span};
 use std::fmt::{Display, Formatter, Result};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,22 +33,22 @@ impl NumSuffix {
 }
 
 impl NumSuffix {
-    pub fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &[u8]) -> Option<Self> {
         match s {
-            "f32" => Some(Self::F32),
-            "f64" => Some(Self::F64),
-            "i8" => Some(Self::I8),
-            "i16" => Some(Self::I16),
-            "i32" => Some(Self::I32),
-            "i64" => Some(Self::I64),
-            "i128" => Some(Self::I128),
-            "isize" => Some(Self::Isize),
-            "u8" => Some(Self::U8),
-            "u16" => Some(Self::U16),
-            "u32" => Some(Self::U32),
-            "u64" => Some(Self::U64),
-            "u128" => Some(Self::U128),
-            "usize" => Some(Self::Usize),
+            b"f32" => Some(Self::F32),
+            b"f64" => Some(Self::F64),
+            b"i8" => Some(Self::I8),
+            b"i16" => Some(Self::I16),
+            b"i32" => Some(Self::I32),
+            b"i64" => Some(Self::I64),
+            b"i128" => Some(Self::I128),
+            b"isize" => Some(Self::Isize),
+            b"u8" => Some(Self::U8),
+            b"u16" => Some(Self::U16),
+            b"u32" => Some(Self::U32),
+            b"u64" => Some(Self::U64),
+            b"u128" => Some(Self::U128),
+            b"usize" => Some(Self::Usize),
             _ => None,
         }
     }
@@ -90,15 +90,15 @@ pub enum TokenKind {
 
     // Types
     // Type(Ty),
-    Identifier(String),
+    Identifier(StringId),
     Integer(u128, Option<NumSuffix>),
     Float(f64, Option<NumSuffix>),
     Byte(u8),
     Char(char),
-    String(String),
-    ByteString(Vec<u8>),
-    RawString(String),
-    RawByteString(Vec<u8>),
+    String(Box<str>),
+    ByteString(Box<[u8]>),
+    RawString(Box<str>),
+    RawByteString(Box<[u8]>),
 
     // Operators
     Plus,
@@ -194,6 +194,10 @@ pub enum Keyword {
     Trait,
     Func,
     Macro,
+    Include,
+    Import,
+    Super,
+    Pkg,
     True,
     False,
     As,

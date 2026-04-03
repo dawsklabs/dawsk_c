@@ -631,10 +631,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("var")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let mut_ = s.mutablility_str(&expr.mut_).to_owned();
+            let mutable = s.mutablility_str(&expr.mutable).to_owned();
             s.line_sub(format_args!(
                 "{}mut{}: {}{}{}",
-                subtext, reset, red, mut_, reset
+                subtext, reset, red, mutable, reset
             ))?;
             if let Some(ty) = &expr.ty {
                 s.visit_type(ty)?;
@@ -649,10 +649,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("const")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let pub_ = s.publicity_str(&expr.pub_);
+            let public = s.publicity_str(&expr.public);
             s.line(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             if let Some(ty) = &expr.ty {
                 s.visit_type(ty)?;
@@ -669,10 +669,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         for field in fields.iter() {
             let field_name = self.get_name(field.ident.id).to_owned();
             self.ident_line(&field_name)?;
-            let pub_ = self.publicity_str(&field.pub_);
+            let public = self.publicity_str(&field.public);
             self.line_sub(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             self.visit_type(&field.ty)?;
         }
@@ -685,10 +685,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
     ) -> Result<(), Self::Error> {
         let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         for field in fields.iter() {
-            let pub_ = self.publicity_str(&field.pub_);
+            let public = self.publicity_str(&field.public);
             self.line(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             self.visit_type(&field.ty)?;
         }
@@ -701,10 +701,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("labeled struct")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let pub_ = s.publicity_str(&expr.pub_);
+            let public = s.publicity_str(&expr.public);
             s.line_sub(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             s.visit_generics(&expr.generics)?;
             s.label_sub("fields")?;
@@ -718,10 +718,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("tuple struct")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let pub_ = s.publicity_str(&expr.pub_);
+            let public = s.publicity_str(&expr.public);
             s.line(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             s.visit_generics(&expr.generics)?;
             s.label_sub("fields")?;
@@ -735,10 +735,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("unit struct")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let pub_ = s.publicity_str(&expr.pub_);
+            let public = s.publicity_str(&expr.public);
             s.line(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))
         })
     }
@@ -749,10 +749,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("enum")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let pub_ = s.publicity_str(&expr.pub_);
+            let public = s.publicity_str(&expr.public);
             s.line_sub(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             s.visit_generics(&expr.generics)?;
             s.label_sub("fields")?;
@@ -809,10 +809,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("type alias")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let pub_ = s.publicity_str(&expr.pub_);
+            let public = s.publicity_str(&expr.public);
             s.line(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             s.visit_generics(&expr.generics)?;
             s.visit_type(&expr.ty)
@@ -830,10 +830,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                 match param {
                     ASTFuncParam::Receiver { mutable, span: _ } => {
                         s.ident_line("inst")?;
-                        let mut_ = s.mutablility_str(mutable);
+                        let mutable = s.mutablility_str(mutable);
                         s.line_sub(format_args!(
                             "{}mut{}: {}{}{}",
-                            subtext, reset, red, mut_, reset
+                            subtext, reset, red, mutable, reset
                         ))?;
                     }
                     ASTFuncParam::Named {
@@ -845,10 +845,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                         let param_name = s.get_name(ident.id).to_owned();
                         s.ident_line(&param_name)?;
                         s.visit_type(ty)?;
-                        let mut_ = s.mutablility_str(mutable);
+                        let mutable = s.mutablility_str(mutable);
                         s.line_sub(format_args!(
                             "{}mut{}: {}{}{}",
-                            subtext, reset, red, mut_, reset
+                            subtext, reset, red, mutable, reset
                         ))?;
                     }
                 }
@@ -863,10 +863,10 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         self.label("func")?;
         self.indented(|s| {
             s.ident_line(&name)?;
-            let pub_ = s.publicity_str(&expr.pub_);
+            let public = s.publicity_str(&expr.public);
             s.line_sub(format_args!(
                 "{}pub{}: {}{}{}",
-                subtext, reset, red, pub_, reset
+                subtext, reset, red, public, reset
             ))?;
             s.visit_generics(&expr.generics)?;
             s.visit_func_params(&expr.params)?;

@@ -92,9 +92,9 @@ impl Line {
 /// In most cases, a source is a single input file.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Source<I: AsRef<str> = String> {
-    text: I,
+    pub text: I,
     lines: Vec<Line>,
-    len: usize,
+    pub len: usize,
     byte_len: usize,
     display_line_offset: usize,
 }

@@ -1,12 +1,13 @@
+pub mod token;
+
 use std::collections::VecDeque;
 
-use super::token::{Keyword, Token, TokenKind};
-use crate::ast::macros::SyntaxContext;
-use crate::ast::token::NumSuffix;
 use crate::color::{RED_COLOR, YELLOW_COLOR};
+use crate::macros::SyntaxContext;
 use crate::reports::{Label, Report, ReportKind};
 use crate::source::{Span, SpanSource};
 use crate::Compiler;
+use token::{Keyword, NumSuffix, Token, TokenKind};
 
 #[derive(Clone, Copy)]
 pub enum LexMode {
@@ -50,7 +51,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn input(&self) -> &[u8] {
-        self.file().text.as_bytes()
+        self.file().source.text.as_bytes()
     }
 
     fn create_token(&mut self, kind: TokenKind, start: usize, end: usize) -> Token {
@@ -249,11 +250,8 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let raw: String = self.input()[self.pos..self.pos + i]
-            .iter()
-            .map(|&b| b as char)
-            .collect();
-        let kind = match raw.as_bytes() {
+        let raw = &self.input()[self.pos..self.pos + i];
+        let kind = match raw {
             b"dec" => TokenKind::Keyword(Keyword::Dec), // e.g. dec x: i8 = 16;
             b"mut" => TokenKind::Keyword(Keyword::Mut), // mutable
             b"pub" => TokenKind::Keyword(Keyword::Pub), // pub = public
@@ -266,6 +264,10 @@ impl<'a> Lexer<'a> {
             b"trait" => TokenKind::Keyword(Keyword::Trait), // trait = interface
             b"func" => TokenKind::Keyword(Keyword::Func),
             b"macro" => TokenKind::Keyword(Keyword::Macro),
+            b"include" => TokenKind::Keyword(Keyword::Include),
+            b"import" => TokenKind::Keyword(Keyword::Import),
+            b"super" => TokenKind::Keyword(Keyword::Super),
+            b"pkg" => TokenKind::Keyword(Keyword::Pkg),
             b"as" => TokenKind::Keyword(Keyword::As), // casting
             b"for" => TokenKind::Keyword(Keyword::For),
             b"while" => TokenKind::Keyword(Keyword::While),
@@ -274,7 +276,12 @@ impl<'a> Lexer<'a> {
             b"in" => TokenKind::Keyword(Keyword::In),
             b"false" => TokenKind::Keyword(Keyword::False),
             b"true" => TokenKind::Keyword(Keyword::True),
-            _ => TokenKind::Identifier(raw),
+            _ => {
+                // Borrow von input() hier beenden durch owned String
+                let s = std::str::from_utf8(raw).unwrap().to_owned();
+                let _ = raw; // immutable borrow endet hier
+                TokenKind::Identifier(self.compiler.string_pool.intern(&s))
+            }
         };
 
         (kind, i)
@@ -292,11 +299,8 @@ impl<'a> Lexer<'a> {
         if len == 0 {
             return (None, 0);
         }
-        let raw: String = self.input()[self.pos + offset..self.pos + offset + len]
-            .iter()
-            .map(|&b| b as char)
-            .collect();
-        match NumSuffix::parse(&raw) {
+        let raw = &self.input()[self.pos + offset..self.pos + offset + len];
+        match NumSuffix::parse(raw) {
             Some(s) => (Some(s), len),
             None => {
                 let span = Span::new(
@@ -307,7 +311,10 @@ impl<'a> Lexer<'a> {
                 );
                 self.compiler.shared.reports.push(
                     Report::build(ReportKind::Error, span)
-                        .with_message(format!("unknown numeric suffix `{raw}`"))
+                        .with_message(format!(
+                            "unknown numeric suffix `{}`",
+                            std::str::from_utf8(raw).unwrap().to_owned()
+                        ))
                         .with_label(Label::new(span).with_color(RED_COLOR))
                         .finish(),
                 );
@@ -341,128 +348,117 @@ impl<'a> Lexer<'a> {
         let mut underscore_positions = Vec::new(); // alle `_` speichern
 
         while let Some(c) = self.peek(i) {
-            let ch = c as char;
-
-            if ch == '_' {
-                underscore_positions.push(i);
-                i += 1;
-                continue;
-            }
-
-            if ch.is_ascii_alphanumeric() {
-                if ch.is_digit(radix) {
-                    if first_digit_index.is_none() {
-                        first_digit_index = Some(i);
-                    }
-                    last_digit_index = Some(i);
-                } else {
-                    invalid_found = true;
+            match c {
+                b'_' => {
+                    underscore_positions.push(i);
                 }
-                saw_digit = true;
-                i += 1;
-                continue;
+                c if c.is_ascii_alphanumeric() => {
+                    let is_valid = match radix {
+                        2 => matches!(c, b'0'..=b'1'),
+                        8 => matches!(c, b'0'..=b'7'),
+                        16 => matches!(c, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'),
+                        _ => c.is_ascii_digit(),
+                    };
+                    if is_valid {
+                        first_digit_index.get_or_insert(i);
+                        last_digit_index = Some(i);
+                    } else {
+                        invalid_found = true;
+                    }
+                    saw_digit = true;
+                }
+                _ => break,
             }
-
-            break;
+            i += 1;
         }
 
         // ---------- WARNINGS ----------
-        if let Some(first) = first_digit_index {
-            if let Some(last) = last_digit_index {
-                // Prefix underscores (zwischen Prefix und erster Ziffer)
-                let leading_us: Vec<_> = underscore_positions
-                    .iter()
-                    .copied()
-                    .filter(|&pos| pos < first)
-                    .collect();
-                if !leading_us.is_empty() {
-                    let span = Span::new(
-                        start + leading_us[0],
-                        start + leading_us[leading_us.len() - 1] + 1,
-                        self.file_id,
-                        SpanSource::Source,
-                    );
+        if let (Some(first), Some(last)) = (first_digit_index, last_digit_index) {
+            let leading_end = underscore_positions.partition_point(|&p| p < first);
+            let trailing_start = underscore_positions.partition_point(|&p| p <= last);
 
-                    self.compiler.shared.reports.push(
-                        Report::build(ReportKind::Warning, span)
-                            .with_message("underscore directly after base prefix")
-                            .with_label(Label::new(span).with_color(YELLOW_COLOR))
-                            .with_help("consider: remove")
-                            .finish(),
-                    );
-                }
+            // Leading
+            if leading_end > 0 {
+                let us = &underscore_positions[..leading_end];
+                let span = Span::new(
+                    start + us[0],
+                    start + us[us.len() - 1] + 1,
+                    self.file_id,
+                    SpanSource::Source,
+                );
+                self.compiler.shared.reports.push(
+                    Report::build(ReportKind::Warning, span)
+                        .with_message("underscore directly after base prefix")
+                        .with_label(Label::new(span).with_color(YELLOW_COLOR))
+                        .with_help("consider: remove")
+                        .finish(),
+                );
+            }
 
-                // Trailing underscores (nach letzter Ziffer)
-                let trailing_us: Vec<_> = underscore_positions
-                    .iter()
-                    .copied()
-                    .filter(|&pos| pos > last)
-                    .collect();
-                if !trailing_us.is_empty() {
-                    let span = Span::new(
-                        start + trailing_us[0],
-                        start + trailing_us[trailing_us.len() - 1] + 1,
-                        self.file_id,
-                        SpanSource::Source,
-                    );
-                    self.compiler.shared.reports.push(
-                        Report::build(ReportKind::Warning, span)
-                            .with_message("trailing underscore in number literal")
-                            .with_label(Label::new(span).with_color(YELLOW_COLOR))
-                            .with_help("consider: remove")
-                            .finish(),
-                    );
-                }
+            // Trailing
+            if trailing_start < underscore_positions.len() {
+                let us = &underscore_positions[trailing_start..];
+                let span = Span::new(
+                    start + us[0],
+                    start + us[us.len() - 1] + 1,
+                    self.file_id,
+                    SpanSource::Source,
+                );
+                self.compiler.shared.reports.push(
+                    Report::build(ReportKind::Warning, span)
+                        .with_message("trailing underscore in number literal")
+                        .with_label(Label::new(span).with_color(YELLOW_COLOR))
+                        .with_help("consider: remove")
+                        .finish(),
+                );
+            }
 
-                // Mittlere underscores zwischen erster und letzter Ziffer
-                let middle_us: Vec<_> = underscore_positions
-                    .iter()
-                    .copied()
-                    .filter(|&p| p > first && p < last)
-                    .collect();
+            // Middle — ein Report pro konsekutiver Gruppe
+            let middle = &underscore_positions[leading_end..trailing_start];
+            let mut group_start: Option<usize> = None;
+            let mut prev: Option<usize> = None;
 
-                let mut groups = Vec::new();
-                let mut group_start: Option<usize> = None;
-                let mut prev: Option<usize> = None;
-
-                for pos in middle_us {
-                    if let Some(prev_pos) = prev {
-                        if pos == prev_pos + 1 {
-                            // fortlaufende Gruppe
-                        } else {
-                            // Gruppe endet
-                            if let Some(start) = group_start {
-                                groups.push((start, prev_pos));
-                            }
-                            group_start = Some(pos);
+            for &pos in middle {
+                match (group_start, prev) {
+                    (Some(_), Some(p)) if pos == p + 1 => {
+                        // Gruppe läuft weiter
+                    }
+                    (Some(s), Some(p)) => {
+                        if p - s >= 1 {
+                            let span = Span::new(
+                                start + s,
+                                start + p + 1,
+                                self.file_id,
+                                SpanSource::Source,
+                            );
+                            self.compiler.shared.reports.push(
+                                Report::build(ReportKind::Warning, span)
+                                    .with_message(
+                                        "multiple consecutive underscores in number literal",
+                                    )
+                                    .with_label(Label::new(span).with_color(YELLOW_COLOR))
+                                    .with_help("consider: remove or reduce to one underscore")
+                                    .finish(),
+                            );
                         }
-                    } else {
                         group_start = Some(pos);
                     }
-                    prev = Some(pos);
-                }
-
-                // letzte Gruppe prüfen
-                if let (Some(start), Some(end)) = (group_start, prev) {
-                    groups.push((start, end));
-                }
-
-                let mut labels: Vec<Label<Span>> = Vec::new();
-
-                for (s, e) in groups.iter() {
-                    if e - s >= 1 {
-                        let span =
-                            Span::new(start + s, start + e + 1, self.file_id, SpanSource::Source);
-
-                        labels.push(Label::new(span).with_color(YELLOW_COLOR));
+                    _ => {
+                        group_start = Some(pos);
                     }
                 }
+                prev = Some(pos);
+            }
 
-                if !labels.is_empty() {
+            // Letzte Gruppe
+            if let (Some(s), Some(e)) = (group_start, prev) {
+                if e - s >= 1 {
+                    let span =
+                        Span::new(start + s, start + e + 1, self.file_id, SpanSource::Source);
                     self.compiler.shared.reports.push(
-                        Report::build(ReportKind::Warning, labels[0].span)
+                        Report::build(ReportKind::Warning, span)
                             .with_message("multiple consecutive underscores in number literal")
-                            .with_labels(labels)
+                            .with_label(Label::new(span).with_color(YELLOW_COLOR))
                             .with_help("consider: remove or reduce to one underscore")
                             .finish(),
                     );
@@ -705,13 +701,15 @@ impl<'a> Lexer<'a> {
     fn read_string(&mut self) -> (TokenKind, usize) {
         let start = self.pos;
         let mut i = 1;
-        let mut result = String::new();
+        // Kapazität schätzen — die meisten Strings sind kürzer als der Rest der Datei
+        let mut result = String::with_capacity(32);
 
         while let Some(c) = self.peek(i) {
             match c {
                 b'"' => {
                     i += 1;
-                    return (TokenKind::String(result), i);
+                    result.shrink_to_fit(); // überschüssige Kapazität freigeben
+                    return (TokenKind::String(result.into_boxed_str()), i);
                 }
                 b'\n' => break,
                 b'\\' => {
@@ -722,20 +720,23 @@ impl<'a> Lexer<'a> {
                         Some(b'r') => '\r',
                         Some(b'\\') => '\\',
                         Some(b'"') => '"',
-                        Some(other) => other as char, // unknown escape
+                        Some(other) => other as char,
                         None => break,
                     };
                     result.push(esc);
                     i += 1;
                 }
-                b'\'' => {
-                    // <-- einfach ins String-Ergebnis pushen
-                    result.push('\'');
-                    i += 1;
-                }
-                other => {
-                    result.push(other as char);
-                    i += 1;
+                _ => {
+                    // Batch-Kopie aller normalen Bytes bis zum nächsten Sonderzeichen
+                    let batch_start = i;
+                    while let Some(c) = self.peek(i) {
+                        match c {
+                            b'"' | b'\n' | b'\\' | b'\'' => break,
+                            _ => i += 1,
+                        }
+                    }
+                    let bytes = &self.input()[self.pos + batch_start..self.pos + i];
+                    result.push_str(std::str::from_utf8(bytes).unwrap());
                 }
             }
         }
@@ -747,7 +748,6 @@ impl<'a> Lexer<'a> {
                 .with_label(Label::new(span).with_color(RED_COLOR))
                 .finish(),
         );
-
         (TokenKind::Error, i)
     }
 
@@ -755,21 +755,17 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         let mut i = 2; // r"
 
-        let mut result = String::new();
         while let Some(c) = self.peek(i) {
             match c {
                 b'\n' => break,
-                b'\'' => {
-                    // <-- einfach ins String-Ergebnis pushen
-                    result.push('\'');
-                    i += 1;
-                }
                 b'"' => {
-                    i += 1;
-                    return (TokenKind::RawString(result), i);
+                    // Slice direkt aus dem Input, keine Allokation
+                    let s = std::str::from_utf8(&self.input()[start + 2..self.pos + i])
+                        .unwrap()
+                        .to_owned(); // noch eine Allokation, aber Box<str> möglich
+                    return (TokenKind::RawString(s.into_boxed_str()), i + 1);
                 }
-                other => {
-                    result.push(other as char);
+                _ => {
                     i += 1;
                 }
             }
@@ -815,7 +811,7 @@ impl<'a> Lexer<'a> {
                 }
                 b'"' => {
                     i += 1;
-                    return (TokenKind::ByteString(bytes), i);
+                    return (TokenKind::ByteString(bytes.into_boxed_slice()), i);
                 }
                 other => {
                     bytes.push(other);
@@ -843,7 +839,7 @@ impl<'a> Lexer<'a> {
         while let Some(c) = self.peek(i) {
             if c == b'"' && self.peek(i + 1) == Some(b'#') {
                 i += 2;
-                return (TokenKind::RawByteString(bytes), i);
+                return (TokenKind::RawByteString(bytes.into_boxed_slice()), i);
             }
             bytes.push(c);
             i += 1;

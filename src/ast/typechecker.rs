@@ -583,8 +583,8 @@ impl<'a> TypeChecker {
         let _ = ctx.scopes.define_symbol(Symbol {
             name: ctx.name_interner.intern(name.as_str()),
             type_: final_ty,
-            mut_: dec.mut_,
-            pub_: dec.pub_,
+            mutable: dec.mutable,
+            public: dec.public,
             span: dec.identifier.span,
         });
     }

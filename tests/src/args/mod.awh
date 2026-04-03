@@ -1,3 +1,5 @@
+include types;
+
 import std.io.prc.{inst, src.Age};
 import pkg.indented.A;
 import pkg.a;

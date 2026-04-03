@@ -279,7 +279,7 @@ pub struct Scope {
 pub struct Var {
     pub name: Symbol,
     pub ty: TyId,
-    pub mut_: Mutability,
+    pub mutable: Mutability,
     pub span: Span,
 }
 

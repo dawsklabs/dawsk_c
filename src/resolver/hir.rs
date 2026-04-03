@@ -78,8 +78,8 @@ impl<'a> HIRResolver<'a> {
                     .define_symbol(Symbol {
                         name: self.scopes.name_interner.intern(name),
                         type_: init_ty,
-                        mut_: dec.mut_,
-                        pub_: dec.pub_,
+                        mutable: dec.mutable,
+                        public: dec.public,
                         span: dec.identifier.span,
                     })
                     .expect("Variable already defined");

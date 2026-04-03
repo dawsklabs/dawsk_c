@@ -61,8 +61,8 @@ impl NameInterner {
 pub struct Symbol {
     pub name: NameId,
     pub type_: Ty,
-    pub mut_: Mutability,
-    pub pub_: Visibility,
+    pub mutable: Mutability,
+    pub public: Visibility,
     pub span: Span,
 }
 
@@ -343,6 +343,6 @@ impl ScopeCtx {
     }
 
     pub fn is_mutable(&self, id: SymbolId) -> bool {
-        self.with_symbol(id, |s| s.mut_ == Mutability::Mutable)
+        self.with_symbol(id, |s| s.mutable == Mutability::Mutable)
     }
 }

@@ -1,7 +1,8 @@
 use crate::ast::strings::StringId;
-use crate::ast::token::{Token, TokenKind};
-use crate::ast::{macros::*, ASTMacroDecExpr, CaptureKind, MacroBodyToken, MacroPatToken, RepKind};
-use crate::source::{SourceMap, Span, SpanSource};
+use crate::ast::{ASTMacroDecExpr, CaptureKind, MacroBodyToken, MacroPatternToken, RepKind};
+use crate::lexer::token::{Token, TokenKind};
+use crate::macros::{ExpansionId, SyntaxContext, SyntaxContextTable};
+use crate::source::{SourceMap, Span};
 use std::collections::HashMap;
 
 // Captured tokens – entweder einzeln oder als Repetition
@@ -20,7 +21,7 @@ pub enum ExpandError {
 }
 
 pub struct MacroExpander {
-    pub macros: HashMap<String, ASTMacroDecExpr>,
+    pub macros: HashMap<StringId, ASTMacroDecExpr>,
     next_expansion: u32,
     depth: usize,
 }
@@ -34,13 +35,13 @@ impl MacroExpander {
         }
     }
 
-    pub fn register(&mut self, name: String, def: ASTMacroDecExpr) {
-        self.macros.insert(name, def);
+    pub fn register(&mut self, i: StringId, def: ASTMacroDecExpr) {
+        self.macros.insert(i, def);
     }
 
     pub fn expand(
         &mut self,
-        name: &str,
+        id: StringId,
         args: Vec<Token>,
         call_span: Span,
         call_ctx: SyntaxContext,
@@ -53,8 +54,8 @@ impl MacroExpander {
 
         let def = self
             .macros
-            .get(name)
-            .ok_or_else(|| ExpandError::NoMatch(name.to_string()))?
+            .get(&id)
+            .ok_or_else(|| ExpandError::NoMatch(id.to_string()))?
             .clone();
 
         self.depth += 1;
@@ -78,7 +79,7 @@ impl MacroExpander {
         }
 
         self.depth -= 1;
-        Err(ExpandError::NoMatch(name.to_string()))
+        Err(ExpandError::NoMatch(id.to_string()))
     }
 
     fn expand_body(
@@ -129,7 +130,7 @@ impl MacroExpander {
                             .filter_map(|(k, v)| match v {
                                 CaptureValue::Repeated(vec) => vec
                                     .get(i)
-                                    .map(|tokens| (*k, CaptureValue::Single(tokens.clone()))),
+                                    .map(|tokens: &Vec<Token>| (*k, CaptureValue::Single(tokens.clone()))),
                                 other => Some((*k, other.clone())),
                             })
                             .collect();
@@ -161,26 +162,26 @@ impl MacroExpander {
         result
     }
 
-    fn match_pattern(pattern: &[MacroPatToken], input: &[Token]) -> Option<Bindings> {
+    fn match_pattern(pattern: &[MacroPatternToken], input: &[Token]) -> Option<Bindings> {
         let mut bindings = HashMap::new();
         let mut pos = 0;
 
         for pat in pattern {
             match pat {
-                MacroPatToken::Literal(kind) => {
+                MacroPatternToken::Literal(kind) => {
                     if input.get(pos)?.kind != *kind {
                         return None;
                     }
                     pos += 1;
                 }
 
-                MacroPatToken::Capture { name, kind, .. } => {
+                MacroPatternToken::Capture { name, kind, .. } => {
                     let (captured, consumed) = Self::match_capture(kind, &input[pos..])?;
                     bindings.insert(*name, CaptureValue::Single(captured));
                     pos += consumed;
                 }
 
-                MacroPatToken::Repetition {
+                MacroPatternToken::Repetition {
                     tokens: rep_pat,
                     separator,
                     kind,
@@ -320,20 +321,20 @@ impl MacroExpander {
         i
     }
 
-    fn match_rep_once(pattern: &[MacroPatToken], input: &[Token]) -> Option<(Bindings, usize)> {
+    fn match_rep_once(pattern: &[MacroPatternToken], input: &[Token]) -> Option<(Bindings, usize)> {
         // Vereinfachte Version: matcht genau ein Vorkommen des Patterns
         let mut bindings = HashMap::new();
         let mut pos = 0;
 
         for pat in pattern {
             match pat {
-                MacroPatToken::Literal(kind) => {
+                MacroPatternToken::Literal(kind) => {
                     if input.get(pos)?.kind != *kind {
                         return None;
                     }
                     pos += 1;
                 }
-                MacroPatToken::Capture { name, kind, .. } => {
+                MacroPatternToken::Capture { name, kind, .. } => {
                     let (captured, consumed) = Self::match_capture(kind, &input[pos..])?;
                     bindings.insert(*name, CaptureValue::Single(captured));
                     pos += consumed;

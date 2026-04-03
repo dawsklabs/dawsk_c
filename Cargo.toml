@@ -10,6 +10,11 @@ memchr = "2.7.6"
 smallvec = "1.15.1"
 strip-ansi-escapes = "0.2.1"
 unicode-width = "0.2.2"
+dhat = { version = "0.3", optional = true }
+rayon = "1.11.0"
+
+[features]
+bench = ["dhat"]
 
 [profile.release]
 debug = true
