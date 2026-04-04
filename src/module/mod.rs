@@ -84,13 +84,13 @@ impl ModuleCollector {
     /// Sucht erst nach datei.awh, dann nach folder/mod.awh
     fn resolve(&self, base_dir: &std::path::Path, name: &str) -> Option<PathBuf> {
         // Priorität 1: datei.awh
-        let file = base_dir.join(name).with_extension("awh");
+        let file = base_dir.join(name).with_extension("dawsk");
         if file.exists() {
             return Some(file);
         }
 
         // Priorität 2: name/mod.awh
-        let mod_file = base_dir.join(name).join("mod.awh");
+        let mod_file = base_dir.join(name).join("mod.dawsk");
         if mod_file.exists() {
             return Some(mod_file);
         }

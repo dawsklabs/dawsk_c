@@ -1,4 +1,4 @@
-include args;
+include {args};
 
 pub struct MyStruct<T = i32> {
     a: i8,
@@ -27,7 +27,7 @@ func a(mut x: i32) -> i32 {
 
 pub enum TokenKind {
     // Keywords
-    Keyword(pkg::super::a::Keyword),
+    Keyword(super.a.Keyword),
 
     // Types
     Type(Ty),

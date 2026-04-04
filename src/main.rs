@@ -52,7 +52,7 @@ fn main() {
 
     ArgumentParser::parse();
 
-    let entry = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/src/main.awh");
+    let entry = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/src/main.dawsk");
     if !entry.exists() {
         eprintln!("error: '{}' not found", entry.display());
         std::process::exit(1);

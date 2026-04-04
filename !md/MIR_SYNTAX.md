@@ -1,10 +1,10 @@
 fn _f0 (args i32:a, i32:b) i32 {
   bb0:
     // copy args into locals (optional, but common)
-    move $0, P:a // move _l:a into _1
+    move $0, P:a // move $l:a into $1
     move $0, P:b
 
-    // struct creation^
+    // struct creation
     assign $3.x, $1
     assign $3.y, $2
 
