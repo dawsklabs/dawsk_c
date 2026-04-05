@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 /// Eindeutige ID für einen interned String
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StringId(u32);
+pub struct StringId(pub u32);
 
 impl StringId {
     pub const EMPTY: StringId = StringId(0);

@@ -1,16 +1,15 @@
 use std::fmt::Arguments;
 use std::io::{self, Write};
 
-use smallvec::SmallVec;
-
 use crate::ast::strings::{StringId, StringPool};
 use crate::ast::{
     ASTAssignmentExpr, ASTBinaryExpr, ASTBlockExpr, ASTCallExpr, ASTCastExpr, ASTConstDecExpr,
     ASTEnumDecExpr, ASTEnumVariant, ASTEnumVariantKind, ASTExpr, ASTExprKind, ASTFieldAccessExpr,
     ASTFuncDecExpr, ASTFuncParam, ASTGenericParam, ASTIndexExpr, ASTMacroCallExpr,
-    ASTMethodCallExpr, ASTParenExpr, ASTPathSegmentExpr, ASTStmt, ASTStmtKind, ASTStructDecExpr,
-    ASTStructField, ASTTupleExpr, ASTTupleStructDecExpr, ASTTupleStructField, ASTType,
-    ASTTypeAliasDecExpr, ASTUnaryExpr, ASTUnitStructDecExpr, ASTVarDecExpr, Mutability, Publicity,
+    ASTMethodCallExpr, ASTParenExpr, ASTPathSegmentExpr, ASTRequirePredicate, ASTStmt, ASTStmtKind,
+    ASTStructDecExpr, ASTStructField, ASTTraitBound, ASTTupleExpr, ASTTupleStructDecExpr,
+    ASTTupleStructField, ASTType, ASTTypeAliasDecExpr, ASTUnaryExpr, ASTUnitStructDecExpr,
+    ASTVarDecExpr, Mutability, Publicity,
 };
 use crate::color::{
     c, BLUE_COLOR, BOLD, GREEN_COLOR, LAVENDAR_COLOR, PEACH_COLOR, RED_COLOR, RESET, SUBTEXT_COLOR,
@@ -197,6 +196,21 @@ fn format_type(ty: &ASTType, col: &Colors, string_pool: &StringPool) -> String {
     }
 }
 
+fn format_trait_bounds(
+    bounds: &[&ASTTraitBound],
+    col: &Colors,
+    string_pool: &StringPool,
+) -> String {
+    bounds
+        .iter()
+        .map(|b| {
+            let name = string_pool.get(b.path.id).unwrap_or("<unknown>");
+            format!("{}{}{}", col.green, name, col.reset)
+        })
+        .collect::<Vec<_>>()
+        .join(&format!("{},{} ", col.subtext, col.reset))
+}
+
 // ---------------------------------------------------------------------------
 // ASTVisitor trait
 // ---------------------------------------------------------------------------
@@ -250,7 +264,8 @@ pub trait ASTVisitor {
     /// The list may be empty; implementations should handle that case gracefully.
     fn visit_generics(
         &mut self,
-        generics: &SmallVec<[ASTGenericParam; 2]>,
+        generics: &[ASTGenericParam],
+        require: &[ASTRequirePredicate],
     ) -> Result<(), Self::Error>;
 
     /// Visits a local variable declaration (`dec [mut] name [: Type] = expr;`).
@@ -260,15 +275,12 @@ pub trait ASTVisitor {
     fn visit_const_dec(&mut self, expr: &ASTConstDecExpr) -> Result<(), Self::Error>;
 
     /// Visits the named fields of a labelled struct.
-    fn visit_struct_fields(
-        &mut self,
-        fields: &SmallVec<[ASTStructField; 4]>,
-    ) -> Result<(), Self::Error>;
+    fn visit_struct_fields(&mut self, fields: &[ASTStructField]) -> Result<(), Self::Error>;
 
     /// Visits the positional fields of a tuple struct.
     fn visit_tuple_struct_fields(
         &mut self,
-        fields: &SmallVec<[ASTTupleStructField; 4]>,
+        fields: &[ASTTupleStructField],
     ) -> Result<(), Self::Error>;
 
     /// Visits a labelled struct declaration (`struct Name { ... }`).
@@ -284,10 +296,7 @@ pub trait ASTVisitor {
     fn visit_enum_dec(&mut self, expr: &ASTEnumDecExpr) -> Result<(), Self::Error>;
 
     /// Visits the list of variants inside an enum declaration.
-    fn visit_enum_variants(
-        &mut self,
-        variants: &SmallVec<[ASTEnumVariant; 4]>,
-    ) -> Result<(), Self::Error>;
+    fn visit_enum_variants(&mut self, variants: &[ASTEnumVariant]) -> Result<(), Self::Error>;
 
     /// Visits a type alias declaration (`type Name = Type;`).
     fn visit_type_alias(&mut self, expr: &ASTTypeAliasDecExpr) -> Result<(), Self::Error>;
@@ -296,7 +305,7 @@ pub trait ASTVisitor {
     fn visit_func_dec(&mut self, expr: &ASTFuncDecExpr) -> Result<(), Self::Error>;
 
     /// Visits a type alias declaration (`func Name { ... }`).
-    fn visit_func_params(&mut self, expr: &SmallVec<[ASTFuncParam; 4]>) -> Result<(), Self::Error>;
+    fn visit_func_params(&mut self, expr: &[ASTFuncParam]) -> Result<(), Self::Error>;
 
     /// Visits the functions body (`{ stmts... [tail] }`).
     fn visit_func_body(&mut self, expr: &ASTBlockExpr) -> Result<(), Self::Error>;
@@ -558,25 +567,43 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
 
     fn visit_generics(
         &mut self,
-        generics: &SmallVec<[ASTGenericParam; 2]>,
+        generics: &[ASTGenericParam],
+        require: &[ASTRequirePredicate],
     ) -> Result<(), Self::Error> {
         if generics.is_empty() {
             return Ok(());
         }
+
+        let (subtext, yellow, reset) = (self.color.subtext, self.color.yellow, self.color.reset);
         self.label_sub("generics")?;
-        let ids: Vec<_> = generics.iter().map(|g| g.name.id).collect();
         self.indented(|s| {
-            for (i, generic) in generics.iter().enumerate() {
-                let name = s.get_name(ids[i]).to_owned();
+            for generic in generics {
+                let name = s.get_name(generic.name.id).to_owned();
+
+                // Inline-bounds + require-bounds für diesen Typ zusammenmergen
+                let extra: Vec<ASTTraitBound> = require
+                    .iter()
+                    .filter(|p| p.ty.id == generic.name.id)
+                    .flat_map(|p| p.bounds.iter().cloned())
+                    .collect();
+
+                let all_bounds: Vec<&ASTTraitBound> =
+                    generic.bounds.iter().chain(extra.iter()).collect();
+
+                let bounds_str = format_trait_bounds(&all_bounds, &s.color, s.string_pool);
+
                 match &generic.default {
                     Some(default) => {
+                        let def_str = format_type(default, &s.color, s.string_pool);
                         s.line(format_args!(
-                            "{} (def){}",
-                            name,
-                            format_type(default, &s.color, s.string_pool)
+                            "{}{}{}: {} {}(default: {}){}",
+                            yellow, name, reset, bounds_str, subtext, def_str, reset
                         ))?;
                     }
-                    None => s.line(format_args!("{}", name))?,
+                    None if !all_bounds.is_empty() => {
+                        s.line(format_args!("{}{}{}: {}", yellow, name, reset, bounds_str))?;
+                    }
+                    None => s.line(format_args!("{}{}{}", yellow, name, reset))?,
                 }
             }
             Ok(())
@@ -661,10 +688,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         })
     }
 
-    fn visit_struct_fields(
-        &mut self,
-        fields: &SmallVec<[ASTStructField; 4]>,
-    ) -> Result<(), Self::Error> {
+    fn visit_struct_fields(&mut self, fields: &[ASTStructField]) -> Result<(), Self::Error> {
         let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         for field in fields.iter() {
             let field_name = self.get_name(field.ident.id).to_owned();
@@ -681,7 +705,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
 
     fn visit_tuple_struct_fields(
         &mut self,
-        fields: &SmallVec<[ASTTupleStructField; 4]>,
+        fields: &[ASTTupleStructField],
     ) -> Result<(), Self::Error> {
         let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         for field in fields.iter() {
@@ -706,7 +730,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                 "{}pub{}: {}{}{}",
                 subtext, reset, red, public, reset
             ))?;
-            s.visit_generics(&expr.generics)?;
+            s.visit_generics(&expr.generics, &[])?;
             s.label_sub("fields")?;
             s.indented(|s| s.visit_struct_fields(&expr.fields))
         })
@@ -723,7 +747,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                 "{}pub{}: {}{}{}",
                 subtext, reset, red, public, reset
             ))?;
-            s.visit_generics(&expr.generics)?;
+            s.visit_generics(&expr.generics, &[])?;
             s.label_sub("fields")?;
             s.indented(|s| s.visit_tuple_struct_fields(&expr.fields))
         })
@@ -754,16 +778,13 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                 "{}pub{}: {}{}{}",
                 subtext, reset, red, public, reset
             ))?;
-            s.visit_generics(&expr.generics)?;
+            s.visit_generics(&expr.generics, &[])?;
             s.label_sub("fields")?;
             s.visit_enum_variants(&expr.variants)
         })
     }
 
-    fn visit_enum_variants(
-        &mut self,
-        variants: &SmallVec<[ASTEnumVariant; 4]>,
-    ) -> Result<(), Self::Error> {
+    fn visit_enum_variants(&mut self, variants: &[ASTEnumVariant]) -> Result<(), Self::Error> {
         if variants.is_empty() {
             return Ok(());
         }
@@ -814,15 +835,12 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                 "{}pub{}: {}{}{}",
                 subtext, reset, red, public, reset
             ))?;
-            s.visit_generics(&expr.generics)?;
+            s.visit_generics(&expr.generics, &[])?;
             s.visit_type(&expr.ty)
         })
     }
 
-    fn visit_func_params(
-        &mut self,
-        params: &SmallVec<[ASTFuncParam; 4]>,
-    ) -> Result<(), Self::Error> {
+    fn visit_func_params(&mut self, params: &[ASTFuncParam]) -> Result<(), Self::Error> {
         let (subtext, red, reset) = (self.color.subtext, self.color.red, self.color.reset);
         self.label_sub("params")?;
         self.indented(|s| {
@@ -868,7 +886,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                 "{}pub{}: {}{}{}",
                 subtext, reset, red, public, reset
             ))?;
-            s.visit_generics(&expr.generics)?;
+            s.visit_generics(&expr.generics, &expr.requires)?;
             s.visit_func_params(&expr.params)?;
             if let Some(ty) = &expr.return_ty {
                 s.visit_type(ty)?;

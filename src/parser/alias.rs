@@ -1,5 +1,3 @@
-use smallvec::smallvec;
-
 use crate::{
     ast::ASTStmt, lexer::token::{Keyword, TokenKind}, parser::Parser
 };
@@ -16,7 +14,7 @@ impl<'a> Parser<'a> {
         let generics = if self.peek(0).kind == TokenKind::LAngle {
             self.parse_generics_defs() // <A, B> als Namen, nicht als Typen
         } else {
-            smallvec![]
+            Box::new([])
         };
 
         self.consume_check(TokenKind::Equals);

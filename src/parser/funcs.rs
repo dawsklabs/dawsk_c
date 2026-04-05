@@ -15,10 +15,10 @@ impl<'a> Parser<'a> {
         let ident_token = self.consume_identifier();
         let ident = self.make_ident(&ident_token);
 
-        let generics = if self.peek(0).kind == TokenKind::LAngle {
+        let mut generics = if self.peek(0).kind == TokenKind::LAngle {
             self.parse_generics_defs()
         } else {
-            smallvec![]
+            Box::new([])
         };
 
         // Parameter: (mut name: Type, name: Type, ...)
@@ -34,6 +34,8 @@ impl<'a> Parser<'a> {
             None
         };
 
+        let requires = self.parse_require_clause(&mut generics);
+
         // Body
         let curly = self.consume_check(TokenKind::LCurly);
         let body_expr = self.parse_block_body(curly);
@@ -44,11 +46,11 @@ impl<'a> Parser<'a> {
             _ => unreachable!(),
         };
 
-        ASTStmt::func_dec(ident, public, generics, params, return_ty, body)
+        ASTStmt::func_dec(ident, public, generics, requires, params, return_ty, body)
     }
 
-    fn parse_func_params(&mut self) -> SmallVec<[ASTFuncParam; 4]> {
-        let mut params = smallvec![];
+    fn parse_func_params(&mut self) -> Box<[ASTFuncParam]> {
+        let mut params: SmallVec<[ASTFuncParam; 2]> = smallvec![];
 
         while self.peek(0).kind != TokenKind::RParen && self.peek(0).kind != TokenKind::EndOfFile {
             // Receiver: &inst oder &mut inst
@@ -120,7 +122,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        params
+        params.into_boxed_slice()
     }
 
     pub(super) fn parse_call_args(&mut self) -> (Box<[ASTExpr]>, Token) {

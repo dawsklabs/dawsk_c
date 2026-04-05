@@ -1,5 +1,3 @@
-use smallvec::smallvec;
-
 use crate::{ast::{ASTStmt, ASTStructField, ASTTupleStructField, Publicity}, color::RED_COLOR, lexer::token::{Keyword, TokenKind}, parser::Parser, reports::{Label, Report, ReportKind}};
 
 impl<'a> Parser<'a> {
@@ -13,7 +11,7 @@ impl<'a> Parser<'a> {
         let generics = if self.peek(0).kind == TokenKind::LAngle {
             self.parse_generics_defs()
         } else {
-            smallvec![]
+            Box::new([])
         };
 
         if self.peek(0).kind == TokenKind::LCurly {

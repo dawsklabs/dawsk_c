@@ -263,6 +263,7 @@ impl<'a> Lexer<'a> {
             b"enum" => TokenKind::Keyword(Keyword::Enum),
             b"trait" => TokenKind::Keyword(Keyword::Trait), // trait = interface
             b"func" => TokenKind::Keyword(Keyword::Func),
+            b"require" => TokenKind::Keyword(Keyword::Require),
             b"macro" => TokenKind::Keyword(Keyword::Macro),
             b"include" => TokenKind::Keyword(Keyword::Include),
             b"import" => TokenKind::Keyword(Keyword::Import),

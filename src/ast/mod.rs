@@ -1,6 +1,5 @@
 // pub mod scope;
 // pub mod traits;
-// pub mod typechecker;
 pub mod strings;
 pub mod visitor;
 
@@ -12,8 +11,6 @@ use crate::ast::strings::{StringId, StringPool};
 use crate::ast::visitor::{ASTPrinter, ASTVisitor, Colors};
 use crate::lexer::token::{NumSuffix, TokenKind};
 use crate::source::{Span, SpanSource};
-
-use smallvec::SmallVec;
 
 // use crate::ast::scope::NameId;
 
@@ -144,8 +141,8 @@ impl ASTStmt {
     pub fn struct_dec(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
-        fields: SmallVec<[ASTStructField; 4]>,
+        generics: Box<[ASTGenericParam]>,
+        fields: Box<[ASTStructField]>,
     ) -> Self {
         Self::new(ASTStmtKind::StructDec(Box::new(ASTStructDecExpr::new(
             ident, public, generics, fields,
@@ -155,8 +152,8 @@ impl ASTStmt {
     pub fn tuple_struct_dec(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
-        fields: SmallVec<[ASTTupleStructField; 4]>,
+        generics: Box<[ASTGenericParam]>,
+        fields: Box<[ASTTupleStructField]>,
     ) -> Self {
         Self::new(ASTStmtKind::TupleStructDec(Box::new(ASTTupleStructDecExpr::new(
             ident, public, generics, fields,
@@ -172,8 +169,8 @@ impl ASTStmt {
     pub fn enum_dec(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
-        variants: SmallVec<[ASTEnumVariant; 4]>,
+        generics: Box<[ASTGenericParam]>,
+        variants: Box<[ASTEnumVariant]>,
     ) -> Self {
         Self::new(ASTStmtKind::EnumDec(Box::new(ASTEnumDecExpr::new(
             ident, public, generics, variants,
@@ -183,7 +180,7 @@ impl ASTStmt {
     pub fn type_alias(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
+        generics: Box<[ASTGenericParam]>,
         ty: ASTType,
     ) -> Self {
         Self::new(ASTStmtKind::TypeAliasDec(Box::new(ASTTypeAliasDecExpr::new(
@@ -194,8 +191,9 @@ impl ASTStmt {
     pub fn func_dec(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
-        params: SmallVec<[ASTFuncParam; 4]>,
+        generics: Box<[ASTGenericParam]>,
+        requires: Box<[ASTRequirePredicate]>,
+        params: Box<[ASTFuncParam]>,
         return_ty: Option<ASTType>,
         body: Box<ASTBlockExpr>,
     ) -> Self {
@@ -203,6 +201,7 @@ impl ASTStmt {
             ident,
             public,
             generics,
+            requires,
             params,
             return_ty,
             body,
@@ -658,16 +657,16 @@ impl ASTConstDecExpr {
 pub struct ASTStructDecExpr {
     pub ident: Ident,
     pub public: Publicity,
-    pub generics: SmallVec<[ASTGenericParam; 2]>,
-    pub fields: SmallVec<[ASTStructField; 4]>,
+    pub generics: Box<[ASTGenericParam]>,
+    pub fields: Box<[ASTStructField]>,
 }
 
 impl ASTStructDecExpr {
     pub fn new(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
-        fields: SmallVec<[ASTStructField; 4]>,
+        generics: Box<[ASTGenericParam]>,
+        fields: Box<[ASTStructField]>,
     ) -> Self {
         Self {
             ident,
@@ -689,16 +688,16 @@ pub struct ASTStructField {
 pub struct ASTTupleStructDecExpr {
     pub ident: Ident,
     pub public: Publicity,
-    pub generics: SmallVec<[ASTGenericParam; 2]>,
-    pub fields: SmallVec<[ASTTupleStructField; 4]>,
+    pub generics: Box<[ASTGenericParam]>,
+    pub fields: Box<[ASTTupleStructField]>,
 }
 
 impl ASTTupleStructDecExpr {
     pub fn new(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
-        fields: SmallVec<[ASTTupleStructField; 4]>,
+        generics: Box<[ASTGenericParam]>,
+        fields: Box<[ASTTupleStructField]>,
     ) -> Self {
         Self {
             ident,
@@ -731,16 +730,16 @@ impl ASTUnitStructDecExpr {
 pub struct ASTEnumDecExpr {
     pub ident: Ident,
     pub public: Publicity,
-    pub generics: SmallVec<[ASTGenericParam; 2]>,
-    pub variants: SmallVec<[ASTEnumVariant; 4]>,
+    pub generics: Box<[ASTGenericParam]>,
+    pub variants: Box<[ASTEnumVariant]>,
 }
 
 impl ASTEnumDecExpr {
     pub fn new(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
-        variants: SmallVec<[ASTEnumVariant; 4]>,
+        generics: Box<[ASTGenericParam]>,
+        variants: Box<[ASTEnumVariant]>,
     ) -> Self {
         Self {
             ident,
@@ -759,8 +758,8 @@ pub struct ASTEnumVariant {
 
 #[derive(Debug, Clone)]
 pub enum ASTEnumVariantKind {
-    Struct(SmallVec<[ASTStructField; 4]>),
-    Tuple(SmallVec<[ASTTupleStructField; 4]>),
+    Struct(Box<[ASTStructField]>),
+    Tuple(Box<[ASTTupleStructField]>),
     Unit,
 }
 
@@ -768,7 +767,7 @@ pub enum ASTEnumVariantKind {
 pub struct ASTTypeAliasDecExpr {
     pub ident: Ident,
     pub public: Publicity,
-    pub generics: SmallVec<[ASTGenericParam; 2]>,
+    pub generics: Box<[ASTGenericParam]>,
     pub ty: ASTType,
 }
 
@@ -776,7 +775,7 @@ impl ASTTypeAliasDecExpr {
     pub fn new(
         ident: Ident,
         public: Publicity,
-        generics: SmallVec<[ASTGenericParam; 2]>,
+        generics: Box<[ASTGenericParam]>,
         ty: ASTType,
     ) -> Self {
         Self {
@@ -966,14 +965,30 @@ impl ASTBlockExpr {
 }
 
 #[derive(Debug, Clone)]
+pub struct ASTTraitBound {
+    pub path: Ident,
+    pub span: Span,
+}
+
+/// `T: Clone + Add`
+#[derive(Debug, Clone)]
+pub struct ASTRequirePredicate {
+    pub ty: Ident,                    // T
+    pub bounds: Box<[ASTTraitBound]>, // [Clone, Add]
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct ASTGenericParam {
     pub name: Ident,              // Name: T, U, ...
+    pub bounds: Box<[ASTTraitBound]>,
     pub default: Option<ASTType>, // e.g. = Inst
+    pub span: Span,
 }
 
 impl ASTGenericParam {
-    pub fn new(name: Ident, default: Option<ASTType>) -> Self {
-        Self { name, default }
+    pub fn new(name: Ident, bounds: Box<[ASTTraitBound]>, default: Option<ASTType>, span: Span) -> Self {
+        Self { name, bounds, default, span }
     }
 }
 
@@ -1023,8 +1038,9 @@ pub struct ASTTupleExpr {
 pub struct ASTFuncDecExpr {
     pub ident: Ident,
     pub public: Publicity,
-    pub generics: SmallVec<[ASTGenericParam; 2]>,
-    pub params: SmallVec<[ASTFuncParam; 4]>,
+    pub generics: Box<[ASTGenericParam]>,
+    pub requires: Box<[ASTRequirePredicate]>,
+    pub params: Box<[ASTFuncParam]>,
     pub return_ty: Option<ASTType>,
     pub body: Box<ASTBlockExpr>,
 }

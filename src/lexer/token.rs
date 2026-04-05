@@ -174,6 +174,7 @@ impl Display for TokenKind {
             TokenKind::String(_) => write!(f, "STR"),
             TokenKind::Char(_) => write!(f, "CHAR"),
             TokenKind::Identifier(_) => write!(f, "IDENTIFIER"),
+            TokenKind::Keyword(k) => write!(f, "KEYWORD:{k}"),
             TokenKind::EndOfFile => write!(f, "EOF"),
             _ => write!(f, "{}", format!("{:?}", self).to_uppercase()),
         }
@@ -193,6 +194,7 @@ pub enum Keyword {
     Enum,
     Trait,
     Func,
+    Require,
     Macro,
     Include,
     Import,
@@ -206,4 +208,10 @@ pub enum Keyword {
     If,
     Else,
     In,
+}
+
+impl Display for Keyword {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{}", format!("{:?}", self).to_uppercase())
+    }
 }

@@ -183,16 +183,16 @@ impl<'a> Parser<'a> {
 
 
 
-    pub(super) fn parse_fields<T, F>(&mut self, end: TokenKind, mut parse_field: F) -> SmallVec<[T; 4]>
+    pub(super) fn parse_fields<T, F>(&mut self, end: TokenKind, mut parse_field: F) -> Box<[T]>
     where
         F: FnMut(&mut Self) -> T,
     {
-        let mut fields = smallvec![];
+        let mut fields: SmallVec<[T; 4]> = smallvec![];
 
         while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EndOfFile {
             fields.push(parse_field(self));
         }
 
-        fields
+        fields.into_boxed_slice()
     }
 }

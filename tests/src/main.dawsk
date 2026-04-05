@@ -103,3 +103,10 @@ macro add {
 }
 
 dec result = add!{1, 2, 3, 5, 4};
+
+func foo<T: Display + Clone + Display + Display>(x: T) -> T
+require
+    T: Clone + Add + Clone,
+{
+    x + x.clone()
+}
