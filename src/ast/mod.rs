@@ -84,12 +84,6 @@ pub struct ASTIncludeStmt {
     pub span: Span,
 }
 
-// #[derive(Debug, Clone)]
-// pub struct ASTUse {
-//     pub path: Box<[String]>,
-//     pub alias: Option<String>,
-// }
-
 #[derive(Debug, Clone)]
 pub enum ASTStmtKind {
     Expr(ASTExpr),
@@ -981,14 +975,13 @@ pub struct ASTRequirePredicate {
 #[derive(Debug, Clone)]
 pub struct ASTGenericParam {
     pub name: Ident,              // Name: T, U, ...
-    pub bounds: Box<[ASTTraitBound]>,
     pub default: Option<ASTType>, // e.g. = Inst
     pub span: Span,
 }
 
 impl ASTGenericParam {
-    pub fn new(name: Ident, bounds: Box<[ASTTraitBound]>, default: Option<ASTType>, span: Span) -> Self {
-        Self { name, bounds, default, span }
+    pub fn new(name: Ident, default: Option<ASTType>, span: Span) -> Self {
+        Self { name, default, span }
     }
 }
 

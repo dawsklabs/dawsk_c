@@ -4,11 +4,12 @@ mod ast;
 mod color;
 mod lexer;
 mod macros;
-mod parser;
 mod module;
+mod parser;
 mod reports;
 mod source;
 
+use std::io;
 use std::sync::Arc;
 
 use reports::ReportBag;
@@ -73,11 +74,13 @@ fn main() {
         ast.visualize(&compiler.string_pool);
     }
 
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
     let _ = compiler
         .shared
         .reports
         .inner
         .lock()
         .unwrap()
-        .print_all(&mut compiler.sourcemap);
+        .write_all(&mut compiler.sourcemap, &mut out);
 }

@@ -8,37 +8,37 @@ use crate::{
 };
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_func_stmt(&mut self) -> ASTStmt {
+    pub(super) fn parse_func_stmt(&mut self) -> Result<ASTStmt, ()> {
         let public = self.parse_visibility();
-        self.consume_check(TokenKind::Keyword(Keyword::Func));
+        self.consume_check(TokenKind::Keyword(Keyword::Func))?;
 
         let ident_token = self.consume_identifier();
         let ident = self.make_ident(&ident_token);
 
-        let mut generics = if self.peek(0).kind == TokenKind::LAngle {
-            self.parse_generics_defs()
+        let generics = if self.peek(0).kind == TokenKind::LAngle {
+            self.parse_generics_defs()?
         } else {
             Box::new([])
         };
 
         // Parameter: (mut name: Type, name: Type, ...)
-        self.consume_check(TokenKind::LParen);
-        let params = self.parse_func_params();
-        self.consume_check(TokenKind::RParen);
+        self.consume_check(TokenKind::LParen)?;
+        let params = self.parse_func_params()?;
+        self.consume_check(TokenKind::RParen)?;
 
         // optionaler Rückgabetyp: -> Type
         let return_ty = if self.peek(0).kind == TokenKind::Arrow {
             self.advance(1);
-            Some(self.parse_type())
+            Some(self.parse_type()?)
         } else {
             None
         };
 
-        let requires = self.parse_require_clause(&mut generics);
+        let requires = self.parse_require_clause(&generics)?;
 
         // Body
-        let curly = self.consume_check(TokenKind::LCurly);
-        let body_expr = self.parse_block_body(curly);
+        let curly = self.consume_check(TokenKind::LCurly)?;
+        let body_expr = self.parse_block_body(curly)?;
 
         // body_expr ist ASTExpr::Block, wir brauchen ASTBlockExpr
         let body = match body_expr.kind {
@@ -46,10 +46,10 @@ impl<'a> Parser<'a> {
             _ => unreachable!(),
         };
 
-        ASTStmt::func_dec(ident, public, generics, requires, params, return_ty, body)
+        Ok(ASTStmt::func_dec(ident, public, generics, requires, params, return_ty, body))
     }
 
-    fn parse_func_params(&mut self) -> Box<[ASTFuncParam]> {
+    fn parse_func_params(&mut self) -> Result<Box<[ASTFuncParam]>, ()> {
         let mut params: SmallVec<[ASTFuncParam; 2]> = smallvec![];
 
         while self.peek(0).kind != TokenKind::RParen && self.peek(0).kind != TokenKind::EndOfFile {
@@ -82,8 +82,8 @@ impl<'a> Parser<'a> {
                     // zum Named-Arm (der dann einen Fehler wirft, ist ok)
                     let ident_token = self.consume_identifier();
                     let ident = self.make_ident(&ident_token);
-                    self.consume_check(TokenKind::Colon);
-                    let ty = self.parse_type();
+                    self.consume_check(TokenKind::Colon)?;
+                    let ty = self.parse_type()?;
                     let span = Span::merge(start_span, self.backpeek(1).span);
                     params.push(ASTFuncParam::Named {
                         ident,
@@ -104,8 +104,8 @@ impl<'a> Parser<'a> {
 
                 let ident_token = self.consume_identifier();
                 let ident = self.make_ident(&ident_token);
-                self.consume_check(TokenKind::Colon);
-                let ty = self.parse_type();
+                self.consume_check(TokenKind::Colon)?;
+                let ty = self.parse_type()?;
                 let span = Span::merge(start_span, self.backpeek(1).span);
                 params.push(ASTFuncParam::Named {
                     ident,
@@ -122,15 +122,15 @@ impl<'a> Parser<'a> {
             }
         }
 
-        params.into_boxed_slice()
+        Ok(params.into_boxed_slice())
     }
 
-    pub(super) fn parse_call_args(&mut self) -> (Box<[ASTExpr]>, Token) {
-        self.consume_check(TokenKind::LParen);
+    pub(super) fn parse_call_args(&mut self) -> Result<(Box<[ASTExpr]>, Token), ()> {
+        self.consume_check(TokenKind::LParen)?;
         let mut args: SmallVec<[ASTExpr; 4]> = SmallVec::new();
 
         while self.peek(0).kind != TokenKind::RParen && self.peek(0).kind != TokenKind::EndOfFile {
-            args.push(self.parse_expr());
+            args.push(self.parse_expr()?);
             if self.peek(0).kind == TokenKind::Comma {
                 self.advance(1);
             } else {
@@ -138,7 +138,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let close = self.consume_check(TokenKind::RParen);
-        (args.into_vec().into_boxed_slice(), close)
+        let close = self.consume_check(TokenKind::RParen)?;
+        Ok((args.into_vec().into_boxed_slice(), close))
     }
 }

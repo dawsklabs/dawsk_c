@@ -3,7 +3,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::{ast::{ASTExpr, ASTStmt}, color::RED_COLOR, lexer::token::{Keyword, NumSuffix, Token, TokenKind}, macros::{SyntaxContext, expander::ExpandError}, parser::Parser, reports::{Label, Report, ReportKind}, source::Span};
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_atom(&mut self) -> ASTExpr {
+    pub(super) fn parse_atom(&mut self) -> Result<ASTExpr, ()> {
         let token = self.consume();
         match token.kind {
             TokenKind::Integer(v, suffix) => {
@@ -22,7 +22,7 @@ impl<'a> Parser<'a> {
                             .finish(),
                     );
                 }
-                ASTExpr::int(v, suffix, token.span)
+                Ok(ASTExpr::int(v, suffix, token.span))
             }
 
             TokenKind::Float(v, suffix) => {
@@ -41,16 +41,16 @@ impl<'a> Parser<'a> {
                             .finish(),
                     );
                 }
-                ASTExpr::float(v, suffix, token.span)
+                Ok(ASTExpr::float(v, suffix, token.span))
             }
-            TokenKind::Byte(v) => ASTExpr::byte(v, token.span),
-            TokenKind::Char(v) => ASTExpr::char(v, token.span),
-            TokenKind::String(v) | TokenKind::RawString(v) => ASTExpr::string(v, token.span),
+            TokenKind::Byte(v) => Ok(ASTExpr::byte(v, token.span)),
+            TokenKind::Char(v) => Ok(ASTExpr::char(v, token.span)),
+            TokenKind::String(v) | TokenKind::RawString(v) => Ok(ASTExpr::string(v, token.span)),
             TokenKind::ByteString(v) | TokenKind::RawByteString(v) => {
-                ASTExpr::byte_string(v, token.span)
+                Ok(ASTExpr::byte_string(v, token.span))
             }
-            TokenKind::Keyword(Keyword::True) => ASTExpr::bool(true, token.span),
-            TokenKind::Keyword(Keyword::False) => ASTExpr::bool(false, token.span),
+            TokenKind::Keyword(Keyword::True) => Ok(ASTExpr::bool(true, token.span)),
+            TokenKind::Keyword(Keyword::False) => Ok(ASTExpr::bool(false, token.span)),
             TokenKind::Identifier(name) => {
                 if self.peek(0).kind == TokenKind::Exclamation {
                     self.advance(1); // '!'
@@ -88,29 +88,29 @@ impl<'a> Parser<'a> {
                                         ))
                                         .finish(),
                                 );
-                                return ASTExpr::error(call_span.file_id);
+                                return Err(());
                             }
                             Err(ExpandError::NoMatch(_)) => {
-                                return ASTExpr::error(call_span.file_id);
+                                return Err(());
                             }
                         }
                     }
 
                     // Fallback: Builtin-Macro
-                    let (args, close) = self.parse_call_args();
+                    let (args, close) = self.parse_call_args()?;
                     let call_span = Span::merge(token.span, close.span);
-                    return ASTExpr::macro_call(name, args, call_span);
+                    return Ok(ASTExpr::macro_call(name, args, call_span));
                 }
-                ASTExpr::variable(name, token.span)
+                Ok(ASTExpr::variable(name, token.span))
             }
 
             TokenKind::LParen => {
                 // Unit-Tupel () oder geklammerten Ausdruck
                 if self.peek(0).kind == TokenKind::RParen {
                     let close = self.consume();
-                    return ASTExpr::unit(Span::merge(token.span, close.span));
+                    return Ok(ASTExpr::unit(Span::merge(token.span, close.span)));
                 }
-                let expr = self.parse_expr();
+                let expr = self.parse_expr()?;
                 // Tupel: (a, b, c)
                 if self.peek(0).kind == TokenKind::Comma {
                     let mut elems = vec![expr];
@@ -119,18 +119,18 @@ impl<'a> Parser<'a> {
                         if self.peek(0).kind == TokenKind::RParen {
                             break;
                         }
-                        elems.push(self.parse_expr());
+                        elems.push(self.parse_expr()?);
                     }
-                    let close = self.consume_check(TokenKind::RParen);
+                    let close = self.consume_check(TokenKind::RParen)?;
                     let span = Span::merge(token.span, close.span);
-                    return ASTExpr::tuple(elems.into_boxed_slice(), span);
+                    return Ok(ASTExpr::tuple(elems.into_boxed_slice(), span));
                 }
-                let close = self.consume_check(TokenKind::RParen);
-                ASTExpr::parenthesized(expr, Span::merge(token.span, close.span))
+                let close = self.consume_check(TokenKind::RParen)?;
+                Ok(ASTExpr::parenthesized(expr, Span::merge(token.span, close.span)))
             }
             // WICHTIG: LCurly hier NICHT konsumieren — parse_block_expr macht das selbst.
             // Da token schon konsumiert ist, müssen wir den Span weitergeben.
-            TokenKind::LCurly => self.parse_block_body(token),
+            TokenKind::LCurly => Ok(self.parse_block_body(token)?),
             _ => {
                 // token wurde bereits konsumiert, also token.span verwenden
                 self.lexer.compiler.shared.reports.push(
@@ -143,12 +143,12 @@ impl<'a> Parser<'a> {
                         )
                         .finish(),
                 );
-                ASTExpr::error(token.span.file_id)
+                Err(())
             }
         }
     }
 
-    pub(super) fn parse_block_body(&mut self, curly: Token) -> ASTExpr {
+    pub(super) fn parse_block_body(&mut self, curly: Token) -> Result<ASTExpr, ()> {
         let mut stmts = Vec::new();
         let mut tail_expr = None;
 
@@ -161,10 +161,10 @@ impl<'a> Parser<'a> {
             };
             match &self.peek(offset).kind {
                 TokenKind::Keyword(Keyword::Dec) => {
-                    stmts.push(self.parse_var_stmt());
+                    stmts.push(self.parse_var_stmt()?);
                 }
                 _ => {
-                    let expr = self.parse_expr();
+                    let expr = self.parse_expr()?;
                     if self.peek(0).kind == TokenKind::Semicolon {
                         self.advance(1);
                         stmts.push(ASTStmt::expr(expr));
@@ -176,23 +176,23 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let close = self.consume_check(TokenKind::RCurly);
+        let close = self.consume_check(TokenKind::RCurly)?;
         let span = Span::merge(curly.span, close.span);
-        ASTExpr::block(stmts.into_boxed_slice(), tail_expr, span)
+        Ok(ASTExpr::block(stmts.into_boxed_slice(), tail_expr, span))
     }
 
 
 
-    pub(super) fn parse_fields<T, F>(&mut self, end: TokenKind, mut parse_field: F) -> Box<[T]>
+    pub(super) fn parse_fields<T, F>(&mut self, end: TokenKind, mut parse_field: F) -> Result<Box<[T]>, ()>
     where
-        F: FnMut(&mut Self) -> T,
+        F: FnMut(&mut Self) -> Result<T, ()>,
     {
         let mut fields: SmallVec<[T; 4]> = smallvec![];
 
         while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EndOfFile {
-            fields.push(parse_field(self));
+            fields.push(parse_field(self)?);
         }
 
-        fields.into_boxed_slice()
+        Ok(fields.into_boxed_slice())
     }
 }

@@ -11,8 +11,8 @@ use crate::{
 };
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_type(&mut self) -> ASTType {
-        let mut base = self.parse_type_atom();
+    pub(super) fn parse_type(&mut self) -> Result<ASTType, ()> {
+        let mut base = self.parse_type_atom()?;
 
         // Generic-Argumente
         if self.peek(0).kind == TokenKind::LAngle {
@@ -21,7 +21,7 @@ impl<'a> Parser<'a> {
             let next_span = self.peek(0).span;
             self.check_whitespace(prev_span, next_span);
 
-            let args = self.parse_generics();
+            let args = self.parse_generics()?;
 
             self.lexer.remove_mode();
 
@@ -31,10 +31,10 @@ impl<'a> Parser<'a> {
             };
         }
 
-        base
+        Ok(base)
     }
 
-    fn parse_type_atom(&mut self) -> ASTType {
+    fn parse_type_atom(&mut self) -> Result<ASTType, ()> {
         if self.peek(0).kind == TokenKind::And {
             self.advance(1);
 
@@ -44,11 +44,11 @@ impl<'a> Parser<'a> {
                 Mutability::Immutable
             };
 
-            let inner = self.parse_type();
-            return ASTType::Ref {
+            let inner = self.parse_type()?;
+            return Ok(ASTType::Ref {
                 mutable,
                 inner: Box::new(inner),
-            };
+            });
         }
 
         let token = self.consume();
@@ -66,7 +66,7 @@ impl<'a> Parser<'a> {
                     let seg = self.make_ident(&seg_token);
                     segments.push(seg);
                 }
-                ASTType::Path(segments.into_boxed_slice()) // oder Path(Ident)
+                Ok(ASTType::Path(segments.into_boxed_slice())) // oder Path(Ident)
             }
 
             TokenKind::LParen => {
@@ -74,7 +74,7 @@ impl<'a> Parser<'a> {
 
                 if self.peek(0).kind != TokenKind::RParen {
                     loop {
-                        elems.push(self.parse_type());
+                        elems.push(self.parse_type()?);
 
                         if self.peek(0).kind == TokenKind::Comma {
                             self.advance(1);
@@ -84,8 +84,8 @@ impl<'a> Parser<'a> {
                     }
                 }
 
-                self.consume_check(TokenKind::RParen);
-                ASTType::Tuple(elems.into_boxed_slice())
+                self.consume_check(TokenKind::RParen)?;
+                Ok(ASTType::Tuple(elems.into_boxed_slice()))
             }
 
             _ => {
@@ -100,7 +100,7 @@ impl<'a> Parser<'a> {
                         )
                         .finish(),
                 );
-                ASTType::Error
+                Err(())
             }
         }
     }

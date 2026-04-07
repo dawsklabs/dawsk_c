@@ -8,14 +8,17 @@ pub use crate::reports::{
     source::{Cache, Source},
 };
 
-use crate::{args::{COLOR_ENABLE, UNICODE_ENABLE}, color};
+use crate::{
+    args::{COLOR_ENABLE, UNICODE_ENABLE},
+    color,
+};
 use std::{
     cmp::{Eq, PartialEq},
     fmt::{self, Debug, Display},
     hash::Hash,
     io::{self, Write},
     ops::{Range, RangeInclusive},
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{atomic::Ordering, Arc, Mutex},
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -215,20 +218,23 @@ pub struct ReportBagInner {
 
 impl ReportBagInner {
     pub fn new() -> Self {
-        Self { reports: vec![] }
+        Self {
+            reports: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, report: Report<crate::source::Span>) {
         self.reports.push(report);
     }
 
-    pub fn print_all<C: Cache<Id>, Id>(&self, cache: &mut C) -> Result<(), std::io::Error>
-    where
-        C: Cache<usize>,
-    {
+    pub fn write_all<C: Cache<usize>, W: Write>(
+        &self,
+        cache: &mut C,
+        writer: &mut W,
+    ) -> Result<(), io::Error> {
         for report in &self.reports {
-            report.print(&mut *cache)?;
-            println!(); // Separate reports with an empty line.
+            report.write(&mut *cache, &mut *writer)?;
+            writer.write_all(b"\n")?;
         }
         Ok(())
     }
@@ -256,8 +262,8 @@ impl<S: Span, K: ReportStyle> Report<S, K> {
             kind,
             code: None,
             msg: None,
-            notes: vec![],
-            help: vec![],
+            notes: Vec::new(),
+            help: Vec::new(),
             span,
             labels: Vec::new(),
             config: Config::new(
@@ -356,10 +362,10 @@ impl fmt::Display for ReportKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         #[allow(deprecated)]
         match self {
-            ReportKind::Error => write!(f, "Error"),
-            ReportKind::Warning => write!(f, "Warning"),
-            ReportKind::Advice => write!(f, "Advice"),
-            ReportKind::Custom(s, _) => write!(f, "{s}"),
+            ReportKind::Error => f.write_str("ERROR"),
+            ReportKind::Warning => f.write_str("WARNING"),
+            ReportKind::Advice => f.write_str("ADVICE"),
+            ReportKind::Custom(s, _) => f.write_str(s),
         }
     }
 }
@@ -367,10 +373,16 @@ impl fmt::Display for ReportKind {
 impl ReportStyle for ReportKind {
     fn get_color(&self, config: &Config) -> Option<&'static str> {
         match self {
-            ReportKind::Error   => config.error_color(),
+            ReportKind::Error => config.error_color(),
             ReportKind::Warning => config.warning_color(),
-            ReportKind::Advice  => config.advice_color(),
-            ReportKind::Custom(_, color) => if config.color { Some(color) } else { None },
+            ReportKind::Advice => config.advice_color(),
+            ReportKind::Custom(_, color) => {
+                if config.color {
+                    Some(color)
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -391,7 +403,7 @@ pub struct ReportBuilder<S: Span, K: ReportStyle> {
 impl<S: Span, K: ReportStyle> ReportBuilder<S, K> {
     /// Give this report a numerical code that may be used to more precisely look up the error in documentation.
     pub fn with_code<C: fmt::Display>(mut self, code: C) -> Self {
-        self.code = Some(format_args!("{code:02}").to_string());
+        self.code = Some(format!("{code:02}"));
         self
     }
 
@@ -698,7 +710,11 @@ impl Config {
         Some(color::BLUE_COLOR).filter(|_| self.color)
     }
     fn filter_color(&self, color: Option<&'static str>) -> Option<&'static str> {
-        if self.color { color } else { None }
+        if self.color {
+            color
+        } else {
+            None
+        }
     }
 
     // Find the character that should be drawn and the number of times it should be drawn for each char
@@ -724,7 +740,11 @@ impl Config {
             multiline_arrows: true,
             color,
             tab_width: 4,
-            char_set: if unicode { CharSet::Unicode } else { CharSet::Ascii },
+            char_set: if unicode {
+                CharSet::Unicode
+            } else {
+                CharSet::Ascii
+            },
             index_type: IndexType::Char,
             minimise_crossings: false,
             context_lines: 0,

@@ -8,7 +8,7 @@ use crate::source::Span;
 use smallvec::SmallVec;
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_include_stmt(&mut self) -> ASTItem {
+    pub(super) fn parse_include_stmt(&mut self) -> Result<ASTItem, ()> {
         let start = self.consume(); // 'include'
 
         let modules: Box<[Ident]> = if self.peek(0).kind == TokenKind::LCurly {
@@ -25,7 +25,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-            self.consume_check(TokenKind::RCurly);
+            self.consume_check(TokenKind::RCurly)?;
             items.into_vec().into_boxed_slice()
         } else {
             let tok = self.consume_identifier();
@@ -33,23 +33,23 @@ impl<'a> Parser<'a> {
             Box::new([ident])
         };
 
-        let semi = self.consume_check(TokenKind::Semicolon);
+        let semi = self.consume_check(TokenKind::Semicolon)?;
         let span = Span::merge(start.span, semi.span);
-        ASTItem::Include(ASTIncludeStmt { modules, span })
+        Ok(ASTItem::Include(ASTIncludeStmt { modules, span }))
     }
 
-    pub(super) fn parse_import_stmt(&mut self) -> ASTItem {
+    pub(super) fn parse_import_stmt(&mut self) -> Result<ASTItem, ()> {
         let start = self.consume(); // 'import'
-        let root = self.parse_import_segments();
-        let semi = self.consume_check(TokenKind::Semicolon);
+        let root = self.parse_import_segments()?;
+        let semi = self.consume_check(TokenKind::Semicolon)?;
         let span = Span::merge(start.span, semi.span);
-        ASTItem::Import(ASTImportStmt { root, span })
+        Ok(ASTItem::Import(ASTImportStmt { root, span }))
     }
 
-    fn parse_import_segments(&mut self) -> Box<[ASTImportSegment]> {
+    fn parse_import_segments(&mut self) -> Result<Box<[ASTImportSegment]>, ()> {
         let mut segments = SmallVec::<[ASTImportSegment; 2]>::new();
         loop {
-            segments.push(self.parse_import_segment());
+            segments.push(self.parse_import_segment()?);
             if self.peek(0).kind == TokenKind::Comma {
                 self.advance(1);
                 if matches!(
@@ -62,10 +62,10 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        segments.into_vec().into_boxed_slice()
+        Ok(segments.into_vec().into_boxed_slice())
     }
 
-    fn parse_import_segment(&mut self) -> ASTImportSegment {
+    fn parse_import_segment(&mut self) -> Result<ASTImportSegment, ()> {
         let tok = self.consume();
         let ident = match &tok.kind {
             TokenKind::Identifier(_) => self.make_ident(&tok),
@@ -96,11 +96,11 @@ impl<'a> Parser<'a> {
             self.advance(1); // '.'
             if self.peek(0).kind == TokenKind::LCurly {
                 self.advance(1); // '{'
-                let inner = self.parse_import_segments();
-                self.consume_check(TokenKind::RCurly);
+                let inner = self.parse_import_segments()?;
+                self.consume_check(TokenKind::RCurly)?;
                 Some(ASTImportTree::Grouped(inner))
             } else {
-                let inner = self.parse_import_segment();
+                let inner = self.parse_import_segment()?;
                 Some(ASTImportTree::Single(Box::new(inner)))
             }
         } else {
@@ -115,6 +115,6 @@ impl<'a> Parser<'a> {
             None
         };
 
-        ASTImportSegment { ident, tree, alias }
+        Ok(ASTImportSegment { ident, tree, alias })
     }
 }

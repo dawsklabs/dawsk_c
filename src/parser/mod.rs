@@ -10,12 +10,12 @@ pub mod structs;
 pub mod types;
 pub mod imports;
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque};
 
 use crate::{Compiler, abort, args, ast::{ASTExpr, ASTItem, ASTStmt, ASTStmtKind, Ident, Publicity, strings::StringId}, color::RED_COLOR, lexer::{Lexer, token::{Keyword, Token, TokenKind}}, macros::expander::MacroExpander, reports::{Label, Report, ReportKind}, source::Span};
 
 pub struct Parser<'a> {
-    lexer: Lexer<'a>,
+    pub lexer: Lexer<'a>,
     buffer: VecDeque<Token>,
     pub expander: MacroExpander, // owned, kein Lifetime
     log_tokens: bool,
@@ -71,17 +71,17 @@ impl<'a> Parser<'a> {
         self.buffer.pop_front().unwrap()
     }
 
-    pub(crate) fn consume_check(&mut self, expected: TokenKind) -> Token {
+    pub(crate) fn consume_check(&mut self, expected: TokenKind) -> Result<Token, ()> {
         let token = self.consume();
         if token.kind == expected {
-            return token;
+            return Ok(token);
         }
-        let span = token.span; // span speichern, bevor wir
+        let span = token.span;
         self.lexer.compiler.shared.reports.push(
             Report::build(ReportKind::Error, span)
                 .with_message(format!(
                     "expected `{expected}`, found `{}`",
-                    token.kind.clone()
+                    token.kind
                 ))
                 .with_label(
                     Label::new(span)
@@ -90,7 +90,7 @@ impl<'a> Parser<'a> {
                 )
                 .finish(),
         );
-        token
+        Err(())
     }
 
     fn check_whitespace(&mut self, starter: Span, next: Span) {
@@ -148,9 +148,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn next_item(&mut self) -> Option<ASTItem> {
+    pub(crate) fn next_item(&mut self) -> Result<Option<ASTItem>, ()> {
         if abort::is_aborted() {
-            return None;
+            return Ok(None);
         }
 
         while self.peek(0).kind == TokenKind::Semicolon {
@@ -161,7 +161,7 @@ impl<'a> Parser<'a> {
             self.peek(0).kind,
             TokenKind::EndOfFile | TokenKind::Error | TokenKind::RCurly
         ) {
-            return None;
+            return Ok(None);
         }
 
         let offset = if matches!(self.peek(0).kind, TokenKind::Keyword(Keyword::Pub)) {
@@ -172,53 +172,53 @@ impl<'a> Parser<'a> {
 
         match &self.peek(offset).kind {
             TokenKind::Keyword(Keyword::Include) => {
-                return Some(self.parse_include_stmt());
+                return Ok(Some(self.parse_include_stmt()?));
             }
             TokenKind::Keyword(Keyword::Import) => {
-                return Some(self.parse_import_stmt());
+                return Ok(Some(self.parse_import_stmt()?));
             }
             _ => {}
         }
 
-        let stmt = self.parse_stmt();
+        let stmt = self.parse_stmt()?;
 
         if let ASTStmtKind::MacroDec(ref def) = stmt.kind {
             self.expander.register(def.ident.id, def.as_ref().clone());
             return self.next_item();
         }
 
-        Some(ASTItem::Stmt(stmt))
+        Ok(Some(ASTItem::Stmt(stmt)))
     }
 
-    fn parse_stmt(&mut self) -> ASTStmt {
+    fn parse_stmt(&mut self) -> Result<ASTStmt, ()> {
         let offset = if matches!(self.peek(0).kind, TokenKind::Keyword(Keyword::Pub)) {
             1
         } else {
             0
         };
         match &self.peek(offset).kind {
-            TokenKind::Keyword(Keyword::Dec) => self.parse_var_stmt(),
-            TokenKind::Keyword(Keyword::Const) => self.parse_const_stmt(),
-            TokenKind::Keyword(Keyword::Type) => self.parse_type_alias_stmt(),
-            TokenKind::Keyword(Keyword::Struct) => self.parse_struct_stmt(),
-            TokenKind::Keyword(Keyword::Enum) => self.parse_enum_stmt(),
-            TokenKind::Keyword(Keyword::Func) => self.parse_func_stmt(),
-            TokenKind::Keyword(Keyword::Macro) => self.parse_macro_stmt(),
+            TokenKind::Keyword(Keyword::Dec) => Ok(self.parse_var_stmt()?),
+            TokenKind::Keyword(Keyword::Const) => Ok(self.parse_const_stmt()?),
+            TokenKind::Keyword(Keyword::Type) => Ok(self.parse_type_alias_stmt()?),
+            TokenKind::Keyword(Keyword::Struct) => Ok(self.parse_struct_stmt()?),
+            TokenKind::Keyword(Keyword::Enum) => Ok(self.parse_enum_stmt()?),
+            TokenKind::Keyword(Keyword::Func) => Ok(self.parse_func_stmt()?),
+            TokenKind::Keyword(Keyword::Macro) => Ok(self.parse_macro_stmt()?),
             // TokenKind::Keyword(Keyword::Trait) => self.parse_trait_stmt(),
             // TokenKind::Keyword(Keyword::Extend) => self.parse_extend_stmt(),
-            _ => self.parse_expr_stmt(),
+            _ => Ok(self.parse_expr_stmt()?),
         }
     }
 
-    fn parse_expr_stmt(&mut self) -> ASTStmt {
-        let expr = self.parse_expr();
+    fn parse_expr_stmt(&mut self) -> Result<ASTStmt, ()> {
+        let expr = self.parse_expr()?;
 
-        self.consume_check(TokenKind::Semicolon);
+        self.consume_check(TokenKind::Semicolon)?;
 
-        ASTStmt::expr(expr)
+        Ok(ASTStmt::expr(expr))
     }
 
-    fn parse_expr(&mut self) -> ASTExpr {
+    fn parse_expr(&mut self) -> Result<ASTExpr, ()> {
         if let TokenKind::Identifier(_) = self.peek(0).kind {
             match self.peek(1).kind {
                 TokenKind::Equals

@@ -3,9 +3,9 @@ use smallvec::SmallVec;
 use crate::{ast::{ASTMacroRule, ASTStmt, CaptureKind, MacroBodyToken, MacroBracketKind, MacroPatternToken, RepKind}, color::RED_COLOR, lexer::token::{Keyword, Token, TokenKind}, parser::Parser, reports::{Label, Report, ReportKind}, source::Span};
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_macro_stmt(&mut self) -> ASTStmt {
+    pub(super) fn parse_macro_stmt(&mut self) -> Result<ASTStmt, ()> {
         let public = self.parse_visibility();
-        self.consume_check(TokenKind::Keyword(Keyword::Macro));
+        self.consume_check(TokenKind::Keyword(Keyword::Macro))?;
 
         let ident_token = self.consume_identifier();
         let ident = self.make_ident(&ident_token);
@@ -44,31 +44,31 @@ impl<'a> Parser<'a> {
         let mut rules: SmallVec<[ASTMacroRule; 4]> = SmallVec::new();
 
         while self.peek(0).kind != end_bracket && self.peek(0).kind != TokenKind::EndOfFile {
-            rules.push(self.parse_macro_rule());
+            rules.push(self.parse_macro_rule()?);
             if self.peek(0).kind != end_bracket {
-                self.consume_check(TokenKind::Semicolon);
+                self.consume_check(TokenKind::Semicolon)?;
             }
         }
 
-        self.consume_check(end_bracket);
-        ASTStmt::macro_dec(ident, public, rules.into_boxed_slice(), bracket_kind) // ← Pass bracket_kind
+        self.consume_check(end_bracket)?;
+        Ok(ASTStmt::macro_dec(ident, public, rules.into_boxed_slice(), bracket_kind)) // ← Pass bracket_kind
     }
 
-    fn parse_macro_rule(&mut self) -> ASTMacroRule {
-        self.consume_check(TokenKind::LParen);
-        let pattern = self.parse_macro_pattern(TokenKind::RParen);
-        self.consume_check(TokenKind::RParen);
+    fn parse_macro_rule(&mut self) -> Result<ASTMacroRule, ()> {
+        self.consume_check(TokenKind::LParen)?;
+        let pattern = self.parse_macro_pattern(TokenKind::RParen)?;
+        self.consume_check(TokenKind::RParen)?;
 
-        self.consume_check(TokenKind::FatArrow);
+        self.consume_check(TokenKind::FatArrow)?;
 
-        self.consume_check(TokenKind::LCurly);
-        let body = self.parse_macro_body(TokenKind::RCurly);
-        self.consume_check(TokenKind::RCurly);
+        self.consume_check(TokenKind::LCurly)?;
+        let body = self.parse_macro_body(TokenKind::RCurly)?;
+        self.consume_check(TokenKind::RCurly)?;
 
-        ASTMacroRule { pattern, body }
+        Ok(ASTMacroRule { pattern, body })
     }
 
-    fn parse_macro_pattern(&mut self, end: TokenKind) -> Box<[MacroPatternToken]> {
+    fn parse_macro_pattern(&mut self, end: TokenKind) -> Result<Box<[MacroPatternToken]>, ()> {
         let mut tokens: SmallVec<[MacroPatternToken; 4]> = SmallVec::new();
 
         while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EndOfFile {
@@ -79,8 +79,8 @@ impl<'a> Parser<'a> {
                     if self.peek(0).kind == TokenKind::LParen {
                         // Repetition: $( ... )sep* oder +
                         self.advance(1);
-                        let inner = self.parse_macro_pattern(TokenKind::RParen);
-                        self.consume_check(TokenKind::RParen);
+                        let inner = self.parse_macro_pattern(TokenKind::RParen)?;
+                        self.consume_check(TokenKind::RParen)?;
 
                         let separator = match self.peek(0).kind.clone() {
                             TokenKind::Comma | TokenKind::Semicolon => Some(self.consume().kind),
@@ -118,7 +118,7 @@ impl<'a> Parser<'a> {
                         let name_tok = self.consume_identifier();
                         let name_id = self.make_ident(&name_tok).id;
 
-                        self.consume_check(TokenKind::Colon);
+                        self.consume_check(TokenKind::Colon)?;
 
                         let kind_tok = self.consume_identifier();
                         let kind = match &kind_tok.kind {
@@ -157,10 +157,10 @@ impl<'a> Parser<'a> {
             }
         }
 
-        tokens.into_boxed_slice()
+        Ok(tokens.into_boxed_slice())
     }
 
-    fn parse_macro_body(&mut self, end: TokenKind) -> Box<[MacroBodyToken]> {
+    fn parse_macro_body(&mut self, end: TokenKind) -> Result<Box<[MacroBodyToken]>, ()> {
         let mut tokens: SmallVec<[MacroBodyToken; 4]> = SmallVec::new();
 
         while self.peek(0).kind != end && self.peek(0).kind != TokenKind::EndOfFile {
@@ -171,8 +171,8 @@ impl<'a> Parser<'a> {
                     if self.peek(0).kind == TokenKind::LParen {
                         // Repetition im Body
                         self.advance(1);
-                        let inner = self.parse_macro_body(TokenKind::RParen);
-                        self.consume_check(TokenKind::RParen);
+                        let inner = self.parse_macro_body(TokenKind::RParen)?;
+                        self.consume_check(TokenKind::RParen)?;
 
                         let separator = match self.peek(0).kind.clone() {
                             TokenKind::Comma | TokenKind::Semicolon => Some(self.consume().kind),
@@ -210,7 +210,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        tokens.into_boxed_slice()
+        Ok(tokens.into_boxed_slice())
     }
 
     pub(super) fn collect_macro_args(&mut self, name_span: Span) -> (Vec<Token>, Span) {

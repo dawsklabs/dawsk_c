@@ -212,6 +212,6 @@ pub enum Keyword {
 
 impl Display for Keyword {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "{}", format!("{:?}", self).to_uppercase())
+        f.write_str(&format!("{self:?}").to_uppercase())
     }
 }

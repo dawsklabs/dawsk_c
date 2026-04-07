@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, io, path::PathBuf};
 
 use crate::{
     ast::{ASTItem, AST},
@@ -51,12 +51,31 @@ impl ModuleCollector {
         let mut includes = Vec::new();
         {
             let mut parser = Parser::new(compiler, file_id);
-            while let Some(item) = parser.next_item() {
-                if let ASTItem::Include(inc) = &item {
-                    includes.push(inc.clone());
-                    // kein path.clone() mehr nötig
+            loop {
+                match parser.next_item() {
+                    Ok(Some(item)) => {
+                        if let ASTItem::Include(inc) = &item {
+                            includes.push(inc.clone());
+                        }
+                        ast.add_item(item);
+                    }
+                    Ok(None) => break,
+                    Err(()) => {
+                        // Fehler ist schon im Report-System — einfach weitermachen
+                        // synchronize ist bereits in parse_stmt passiert
+                        let stdout = io::stdout();
+                        let mut out = io::BufWriter::new(stdout.lock());
+                        let _ = parser
+                            .lexer
+                            .compiler
+                            .shared
+                            .reports
+                            .inner
+                            .lock()
+                            .unwrap()
+                            .write_all(&mut parser.lexer.compiler.sourcemap, &mut out);
+                    }
                 }
-                ast.add_item(item);
             }
         } // parser wird hier gedroppt → compiler wieder frei
 

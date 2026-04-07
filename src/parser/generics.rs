@@ -1,7 +1,7 @@
 use smallvec::{smallvec, SmallVec};
 
 use crate::{
-    ast::{ASTGenericParam, ASTRequirePredicate, ASTTraitBound, ASTType},
+    ast::{strings::StringId, ASTGenericParam, ASTRequirePredicate, ASTTraitBound, ASTType},
     color::{BLUE_COLOR, RED_COLOR, YELLOW_COLOR},
     lexer::token::{Keyword, TokenKind},
     parser::Parser,
@@ -10,12 +10,12 @@ use crate::{
 };
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_generics(&mut self) -> Box<[ASTType]> {
-        self.consume_check(TokenKind::LAngle);
+    pub(super) fn parse_generics(&mut self) -> Result<Box<[ASTType]>, ()> {
+        self.consume_check(TokenKind::LAngle)?;
         let mut elems: SmallVec<[ASTType; 2]> = smallvec![];
 
         loop {
-            elems.push(self.parse_type());
+            elems.push(self.parse_type()?);
 
             match self.peek(0).kind {
                 TokenKind::Comma => {
@@ -29,80 +29,28 @@ impl<'a> Parser<'a> {
                     let span = self.peek(0).span;
                     self.lexer.compiler.shared.reports.push(
                         Report::build(ReportKind::Error, span)
-                            .with_message("unexpected tok3en")
+                            .with_message("unexpected token")
                             .with_label(
                                 Label::new(span)
-                                    .with_message("expected CLOSING ANGLE BRACKET or COMMA")
+                                    .with_message(format!(
+                                        "expected {} or {}",
+                                        TokenKind::RAngle,
+                                        TokenKind::Comma
+                                    ))
                                     .with_color(RED_COLOR),
                             )
                             .finish(),
                     );
-
                     break;
                 }
             }
         }
 
-        elems.into_boxed_slice()
+        Ok(elems.into_boxed_slice())
     }
 
-    fn dedup_trait_bounds(
-        &mut self,
-        ty_name: &str,
-        bounds: &[ASTTraitBound],
-    ) -> Box<[ASTTraitBound]> {
-        let mut seen: SmallVec<[u32; 4]> = smallvec![];
-        let mut dup_spans: Vec<(Span, Span)> = vec![];
-
-        let deduped = bounds
-            .iter()
-            .filter(|bound| {
-                if seen.contains(&bound.path.id.0) {
-                    let first = bounds.iter().find(|b| b.path.id == bound.path.id).unwrap();
-                    dup_spans.push((bound.span, first.span));
-                    false
-                } else {
-                    seen.push(bound.path.id.0);
-                    true
-                }
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-
-        if !dup_spans.is_empty() {
-                    let mut report = Report::build(ReportKind::Warning, dup_spans[0].0)
-                        .with_message(format!(
-                            "{} redundant bound{} on `{}`",
-                            dup_spans.len(),
-                            if dup_spans.len() == 1 { "" } else { "s" },
-                            ty_name
-                        ));
-
-                    // Original nur einmal labeln
-                    report = report.with_label(
-                        Label::new(dup_spans[0].1)
-                            .with_message("first defined here")
-                            .with_color(BLUE_COLOR),
-                    );
-
-                    // Alle redundanten Stellen labeln
-                    for (dup_span, _) in &dup_spans {
-                        report = report.with_label(
-                            Label::new(*dup_span)
-                                .with_message("redundant here")
-                                .with_color(YELLOW_COLOR),
-                        );
-                    }
-
-                    self.lexer.compiler.shared.reports.push(report.finish());
-                }
-
-        deduped
-    }
-
-    pub(super) fn parse_generics_defs(&mut self) -> Box<[ASTGenericParam]> {
-        self.consume_check(TokenKind::LAngle);
+    pub(super) fn parse_generics_defs(&mut self) -> Result<Box<[ASTGenericParam]>, ()> {
+        self.consume_check(TokenKind::LAngle)?;
         let mut params: SmallVec<[ASTGenericParam; 2]> = smallvec![];
 
         loop {
@@ -111,30 +59,15 @@ impl<'a> Parser<'a> {
             let ident_token = self.consume_identifier();
             let ident = self.make_ident(&ident_token);
 
-            let bounds = if self.peek(0).kind == TokenKind::Colon {
-                self.advance(1);
-                let raw = self.parse_trait_bounds();
-                let ty_name = self
-                    .lexer
-                    .compiler
-                    .string_pool
-                    .get(ident.id)
-                    .unwrap()
-                    .to_owned();
-                self.dedup_trait_bounds(&ty_name, &raw)
-            } else {
-                Box::new([])
-            };
-
             let default = if self.peek(0).kind == TokenKind::Equals {
                 self.advance(1);
-                Some(self.parse_type())
+                Some(self.parse_type()?)
             } else {
                 None
             };
 
             let span = Span::merge(start_span, self.backpeek(1).span);
-            params.push(ASTGenericParam::new(ident, bounds, default, span));
+            params.push(ASTGenericParam::new(ident, default, span));
 
             match self.peek(0).kind {
                 TokenKind::Comma => {
@@ -151,7 +84,11 @@ impl<'a> Parser<'a> {
                             .with_message("unexpected token")
                             .with_label(
                                 Label::new(span)
-                                    .with_message("expected CLOSING ANGLE BRACKET or COMMA")
+                                    .with_message(format!(
+                                        "expected {} or {}",
+                                        TokenKind::RAngle,
+                                        TokenKind::Comma
+                                    ))
                                     .with_color(RED_COLOR),
                             )
                             .finish(),
@@ -161,15 +98,15 @@ impl<'a> Parser<'a> {
             }
         }
 
-        params.into_boxed_slice()
+        Ok(params.into_boxed_slice())
     }
 
     pub(super) fn parse_require_clause(
         &mut self,
-        generics: &mut [ASTGenericParam],
-    ) -> Box<[ASTRequirePredicate]> {
+        generics: &[ASTGenericParam], // kein mut mehr nötig
+    ) -> Result<Box<[ASTRequirePredicate]>, ()> {
         if self.peek(0).kind != TokenKind::Keyword(Keyword::Require) {
-            return Box::new([]);
+            return Ok(Box::new([]));
         }
         self.advance(1);
 
@@ -181,7 +118,7 @@ impl<'a> Parser<'a> {
             let ident_token = self.consume_identifier();
             let ty = self.make_ident(&ident_token);
 
-            self.consume_check(TokenKind::Colon);
+            self.consume_check(TokenKind::Colon)?;
 
             let raw_bounds = self.parse_trait_bounds();
             let ty_name = self
@@ -192,80 +129,75 @@ impl<'a> Parser<'a> {
                 .unwrap()
                 .to_owned();
 
-            if let Some(generic) = generics.iter_mut().find(|g| g.name.id == ty.id) {
-                // Gegen bestehende inline-bounds filtern
-                let mut dup_spans: Vec<(Span, Span)> = vec![];
-                let new_bounds: Box<[ASTTraitBound]> = raw_bounds
-                    .iter()
-                    .filter(|bound| {
-                        if let Some(existing) =
-                            generic.bounds.iter().find(|b| b.path.id == bound.path.id)
+            // Nur noch self-dups im require-Block selbst prüfen
+            let mut seen: SmallVec<[(u32, Span); 4]> = smallvec![];
+            let mut dup_groups: SmallVec<[(u32, Span, Vec<Span>); 4]> = smallvec![];
+
+            let bounds: Box<[ASTTraitBound]> = raw_bounds
+                .iter()
+                .filter(|bound| {
+                    let id = bound.path.id.0;
+                    if let Some((_, first_span)) = seen.iter().find(|(sid, _)| *sid == id) {
+                        if let Some((_, _, spans)) =
+                            dup_groups.iter_mut().find(|(did, _, _)| *did == id)
                         {
-                            dup_spans.push((bound.span, existing.span));
-                            false
+                            spans.push(bound.span);
                         } else {
-                            true
+                            dup_groups.push((id, *first_span, vec![bound.span]));
                         }
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice();
+                        false
+                    } else {
+                        seen.push((id, bound.span));
+                        true
+                    }
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
 
-                if !dup_spans.is_empty() {
-                    let mut report = Report::build(ReportKind::Warning, dup_spans[0].0)
-                        .with_message(format!(
-                            "{} redundant bound{} on `{}`",
-                            dup_spans.len(),
-                            if dup_spans.len() == 1 { "" } else { "s" },
-                            ty_name
-                        ));
+            for (dup_id, first_span, dup_spans) in &dup_groups {
+                let bound_name = self
+                    .lexer
+                    .compiler
+                    .string_pool
+                    .get(StringId(*dup_id))
+                    .unwrap_or("<unknown>");
 
-                    // Original nur einmal labeln
-                    report = report.with_label(
-                        Label::new(dup_spans[0].1)
-                            .with_message("first defined here")
+                let mut report = Report::build(ReportKind::Warning, dup_spans[0])
+                    .with_message(format!("redundant bound `{}` on `{}`", bound_name, ty_name))
+                    .with_label(
+                        Label::new(*first_span)
+                            .with_message("already defined here")
                             .with_color(BLUE_COLOR),
                     );
 
-                    // Alle redundanten Stellen labeln
-                    for (dup_span, _) in &dup_spans {
-                        report = report.with_label(
-                            Label::new(*dup_span)
-                                .with_message("redundant here")
-                                .with_color(YELLOW_COLOR),
-                        );
-                    }
-
-                    self.lexer.compiler.shared.reports.push(report.finish());
+                for dup_span in dup_spans {
+                    report = report.with_label(
+                        Label::new(*dup_span)
+                            .with_color(YELLOW_COLOR),
+                    );
                 }
 
-                // Neue bounds nochmal gegen sich selbst deduplizieren ...
-                let new_bounds = self.dedup_trait_bounds(&ty_name, &new_bounds);
-
-                // ... und in den GenericParam mergen
-                let merged = generic
-                    .bounds
-                    .iter()
-                    .chain(new_bounds.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice();
-                generic.bounds = merged;
-
-                if !new_bounds.is_empty() {
-                    let span = Span::merge(start_span, self.backpeek(1).span);
-                    predicates.push(ASTRequirePredicate {
-                        ty,
-                        bounds: new_bounds,
-                        span,
-                    });
-                }
-            } else {
-                // Typparameter nicht in generics — nur gegen sich selbst deduplizieren
-                let bounds = self.dedup_trait_bounds(&ty_name, &raw_bounds);
-                let span = Span::merge(start_span, self.backpeek(1).span);
-                predicates.push(ASTRequirePredicate { ty, bounds, span });
+                self.lexer.compiler.shared.reports.push(report.finish());
             }
+
+            // Typparameter existiert nicht in generics — später Fehler im Typchecker
+            if !generics.iter().any(|g| g.name.id == ty.id) {
+                let span = self.peek(0).span;
+                self.lexer.compiler.shared.reports.push(
+                    Report::build(ReportKind::Error, span)
+                        .with_message(format!("unknown type parameter `{}`", ty_name))
+                        .with_label(
+                            Label::new(ty.span)
+                                .with_message("not found in generic params")
+                                .with_color(RED_COLOR),
+                        )
+                        .finish(),
+                );
+            }
+
+            let span = Span::merge(start_span, self.backpeek(1).span);
+            predicates.push(ASTRequirePredicate { ty, bounds, span });
 
             if self.peek(0).kind == TokenKind::Comma {
                 self.advance(1);
@@ -274,7 +206,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        predicates.into_boxed_slice()
+        Ok(predicates.into_boxed_slice())
     }
 
     fn parse_trait_bounds(&mut self) -> Box<[ASTTraitBound]> {
@@ -287,7 +219,7 @@ impl<'a> Parser<'a> {
             bounds.push(ASTTraitBound { path, span });
 
             if self.peek(0).kind == TokenKind::Plus {
-                self.advance(1); // '+'
+                self.advance(1);
             } else {
                 break;
             }

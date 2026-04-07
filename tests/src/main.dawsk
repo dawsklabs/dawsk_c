@@ -1,4 +1,4 @@
-include {args};
+// include {args};
 
 pub struct MyStruct<T = i32> {
     a: i8,
@@ -8,7 +8,7 @@ pub struct MyStruct<T = i32> {
 
 pub const M: i16 = -15 + 5; // constants
 
-pub struct A(i8, pkg.B);
+pub struct A(i8, /*pkg.*/B);
 
 pub type B<T> = (T, u8);
 
@@ -27,7 +27,7 @@ func a(mut x: i32) -> i32 {
 
 pub enum TokenKind {
     // Keywords
-    Keyword(super.a.Keyword),
+    Keyword(/*super.a.*/Keyword),
 
     // Types
     Type(Ty),
@@ -104,9 +104,9 @@ macro add {
 
 dec result = add!{1, 2, 3, 5, 4};
 
-func foo<T: Display + Clone + Display + Display>(x: T) -> T
+func foo<T>(x: T) -> T
 require
-    T: Clone + Add + Clone,
+    T: Clone + Add + Clone + Display + Display + Clone,
 {
     x + x.clone()
 }

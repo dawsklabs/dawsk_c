@@ -573,24 +573,19 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
         if generics.is_empty() {
             return Ok(());
         }
-
         let (subtext, yellow, reset) = (self.color.subtext, self.color.yellow, self.color.reset);
         self.label_sub("generics")?;
         self.indented(|s| {
             for generic in generics {
                 let name = s.get_name(generic.name.id).to_owned();
 
-                // Inline-bounds + require-bounds für diesen Typ zusammenmergen
-                let extra: Vec<ASTTraitBound> = require
+                let bounds: Vec<&ASTTraitBound> = require
                     .iter()
                     .filter(|p| p.ty.id == generic.name.id)
-                    .flat_map(|p| p.bounds.iter().cloned())
+                    .flat_map(|p| p.bounds.iter())
                     .collect();
 
-                let all_bounds: Vec<&ASTTraitBound> =
-                    generic.bounds.iter().chain(extra.iter()).collect();
-
-                let bounds_str = format_trait_bounds(&all_bounds, &s.color, s.string_pool);
+                let bounds_str = format_trait_bounds(&bounds, &s.color, s.string_pool);
 
                 match &generic.default {
                     Some(default) => {
@@ -600,7 +595,7 @@ impl<'a, W: Write> ASTVisitor for ASTPrinter<'a, W> {
                             yellow, name, reset, bounds_str, subtext, def_str, reset
                         ))?;
                     }
-                    None if !all_bounds.is_empty() => {
+                    None if !bounds.is_empty() => {
                         s.line(format_args!("{}{}{}: {}", yellow, name, reset, bounds_str))?;
                     }
                     None => s.line(format_args!("{}{}{}", yellow, name, reset))?,
